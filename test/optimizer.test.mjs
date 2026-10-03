@@ -20,7 +20,6 @@ import {
   looksOpenEnded,
   isContentFree,
   isPreciseInstruction,
-  isStructuralOnly,
   preservesAnchors,
   looksSeedish,
   optimizePromptText,
@@ -31,6 +30,7 @@ import {
   AUDIT_SYSTEM_TEMPLATE,
   DEPTH_DEEP_SUFFIX,
   DEPTH_LIGHT_SUFFIX,
+  DEPTH_STANDARD_SUFFIX,
   MAX_TEXT_LENGTH,
   PRECISE_SUFFIX,
   SYSTEM_SUFFIX,
@@ -743,7 +743,7 @@ test("审判报 PADDED：精确输入被加戏时定向修复，绝不回填加�
     gate: {
       verdict: "repaired",
       repairs: 1,
-      rechecked: false,
+      rechecked: true,
       violations: [
         { kind: "padded", text: "加了搜索引用的步骤" },
         { kind: "padded", text: "加了失败回退条款" },
@@ -751,7 +751,8 @@ test("审判报 PADDED：精确输入被加戏时定向修复，绝不回填加�
     },
     detail: "",
   });
-  assert.equal(llm.seen.length, 3, "结构型越线（padded）修复后免二次审判：4 次调用降到 3 次");
+  assert.equal(llm.seen.length, 4, "修复后一律复核：4 次调用");
+  assert.equal(result.gate.rechecked, true, "复核过必须标注");
   assert.ok(llm.seen[2].system.includes("PRECISE-INPUT MODE"), "修复稿仍须遵守精确模式");
   assert.ok(llm.seen[2].system.includes("REPAIR MODE"));
   assert.ok(llm.seen[2].messages[0].content[0].text.includes("加了搜索引用的步骤"), "修复 prompt 必须点名加戏内容");
@@ -936,7 +937,7 @@ test("宽容带已废除：审判报失真一律定向修复，长度比不再�
   const result = await optimizePromptText({ llm, route: ROUTE, text: open });
   assert.equal(result.ok, true);
   assert.equal(result.tier, "repaired");
-  assert.equal(llm.seen.length, 3, "结构型越线走修复后免复核（4 → 3），但绝不回填原始失真稿");
+  assert.equal(llm.seen.length, 4, "失真一律走完整修复+复核流程");
 });
 
 test("审判报 THIN：种子输入补全一次并重新审判，补全稿通过即回填", async () => {
@@ -1592,35 +1593,49 @@ test("A 闸门凭证：摘要随成功结果回传", async () => {
   assert.equal(result.gate.verdict, "ok");
 });
 
-test("C 结构型越线判定：删改类免复核，语义类必须复核", () => {
-  assert.equal(isStructuralOnly([{ kind: "padded" }]), true);
-  assert.equal(isStructuralOnly([{ kind: "scope_added" }, { kind: "tone_shifted" }]), true);
-  assert.equal(isStructuralOnly([{ kind: "distorted" }]), false);
-  assert.equal(isStructuralOnly([{ kind: "contradicted" }]), false);
-  // 混合时按最严处理：只要有一个语义型就必须复核
-  assert.equal(isStructuralOnly([{ kind: "padded" }, { kind: "distorted" }]), false);
-  assert.equal(isStructuralOnly([]), false);
-});
-
-test("C 结构型越线修复后免二次审判，凭证如实标注未复核", async () => {
+test("修复稿一律复核：scope_added（过度发散）不得免检直接交付", async () => {
+  // 回归守卫。0.8.0 曾对结构型越线跳过复核以省一次调用，实测代价是线上一次
+  // scope_added 的修复稿未经复核就交付——而旧版本会复核、仍越线则拒绝并保留原文。
+  // 省下的那次调用恰好省在唯一拦住"越修越发散"的环节上。
   const input = "帮我看看这个登录接口有没有问题";
   const llm = scriptedLlm([
     textChunks("请审查这个登录接口的安全问题，并给出修复建议与实施排期。"),
     textChunks("SCOPE_ADDED: 实施排期"),
     textChunks("请检查这个登录接口是否存在问题，并说明出现在哪里。"),
+    textChunks("OK"),
   ]);
   const result = await optimizePromptText({ llm, route: ROUTE, text: input });
-  assert.equal(llm.seen.length, 3, "结构型越线：3 次调用（原来 4 次）");
+  assert.equal(llm.seen.length, 4, "修复后必须复核：4 次调用");
   assert.equal(result.ok, true);
   assert.equal(result.tier, "repaired");
-  assert.equal(result.gate.rechecked, false, "免复核必须如实标注，不能伪装成复核过");
+  assert.equal(result.gate.rechecked, true, "复核过就必须标注 rechecked=true");
   assert.deepEqual(result.gate.violations, [{ kind: "scope_added", text: "实施排期" }]);
 });
 
-test("D/E 深度档位：三档后缀各不相同，未知值按标准档", () => {
+test("修复稿复核仍越线：拒绝并保留原文（发散控制不得被延迟优化吃掉）", async () => {
+  const input = "帮我做个图片压缩的功能";
+  const llm = scriptedLlm([
+    textChunks("请实现一个图片压缩服务：支持上传压缩、断点续传、CDN 分发，并提供压缩率报表。"),
+    textChunks("SCOPE_ADDED: CDN 分发"),
+    textChunks("请实现图片压缩并分发到 CDN。"),
+    textChunks("SCOPE_ADDED: CDN 分发"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, ERROR_CODES.FIDELITY_REJECTED);
+  assert.equal(result.text, undefined, "拒绝时绝不带 text");
+  assert.ok(typeof result.rejected === "string" && result.rejected !== "");
+});
+
+test("D/E 深度档位：标准档为空（等于基线），轻/深度档才偏离", () => {
   assert.ok(DEPTH_LIGHT_SUFFIX.includes("DEPTH - LIGHT"));
   assert.ok(DEPTH_DEEP_SUFFIX.includes("DEPTH - DEEP"));
   assert.ok(!DEPTH_LIGHT_SUFFIX.includes("DEPTH - DEEP"));
+  // 标准档不加任何后缀：默认路径的 prompt 必须与引入深度档位之前逐字节相同。
+  // 这是"回到之前那版效果"唯一可靠的实现方式——任何附加说明都是对模型的又一次干预。
+  assert.equal(DEPTH_STANDARD_SUFFIX, "", "标准档必须为空");
+  assert.equal(depthSuffix("standard"), "");
+  assert.equal(depthSuffix(undefined), "");
   assert.equal(depthSuffix("deep"), DEPTH_DEEP_SUFFIX);
   assert.equal(depthSuffix("light"), DEPTH_LIGHT_SUFFIX);
   assert.equal(depthSuffix(undefined), depthSuffix("standard"));
@@ -1798,7 +1813,9 @@ test("D 深度档位非法值安全降级为标准档（旧客户端兼容）", 
     textChunks("OK"),
   ]);
   await optimizePromptText({ llm, route: ROUTE, text: "帮我做个导出报表的功能", depth: "ultra" });
-  assert.ok(llm.seen[0].system.includes("DEPTH - STANDARD"));
+  // 非法值 → 标准档 → 无后缀：system prompt 里不该出现任何 DEPTH 块
+  assert.ok(!llm.seen[0].system.includes("DEPTH - "), "非法值必须降级到不加后缀的基线");
+  assert.equal(llm.seen[0].system, buildSystemPromptFor("帮我做个导出报表的功能"));
 });
 
 test("codeVersion 报的是本进程加载的代码版本，不是磁盘上的 package.json", async () => {

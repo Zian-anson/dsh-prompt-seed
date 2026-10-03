@@ -90,11 +90,17 @@ honestly as `未审判（输入已精确）` — the precise-mode shortcut must 
 revert-then-click-again. The revert state now offers `✦` (re-run from the original, keeping up to
 three versions) and `‹` (step back to the previous version). No competitor has this.
 
-*Fewer calls on the common repair path (C).* A real run took 14 s through four calls
-(rewrite → audit → repair → re-audit). Structural violations (`padded` / `scope_added` /
-`tone_shifted`) are fixed by deleting or rewording a named sentence, so the repair is now accepted
-without re-auditing — three calls. Semantic violations (`distorted` / `contradicted`) still get the
-second audit, because a wrong meaning must never be handed over on trust.
+*Fewer calls on the common repair path (C) — added in 0.8.0, **reverted in 0.8.3**.* A real run took
+14 s through four calls (rewrite → audit → repair → re-audit). Structural violations
+(`padded` / `scope_added` / `tone_shifted`) looked predictable enough to accept after repair without
+re-auditing, saving one call.
+
+It was reverted because the saving landed on the one step that catches "the repair made it wider":
+a live run was flagged `scope_added` (the scope had been widened — the definition of over-elaboration)
+and the repaired draft was delivered **unverified**, where the previous version would have re-audited
+and rejected a still-widening draft. The default path's prompt was also restored to be byte-identical
+to the pre-depth version, because "make the default behave like the version I liked" is only
+verifiable if nothing at all is added to it. Latency optimisation must not eat divergence control.
 
 *Adaptive depth (D).* The feedback pipeline built in v0.7.0 now feeds back into behaviour: local
 counts of `reverted` (undone = too much) and `retried` (re-asked = too little) pick the depth, with

@@ -9,6 +9,25 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.8.3] - 2026-10-03
+
+### Fixed
+
+- **Over-elaboration was reaching the user unverified.** The 0.8.0 "structural violations skip the
+  second audit" shortcut accepted a repaired draft without re-checking it. A live run was flagged
+  `scope_added` — the scope had been widened, which is precisely what over-elaboration means — and
+  the repaired draft was delivered on trust, where the previous version would have re-audited and
+  rejected a draft that was still widening. **Repairs are re-audited again, unconditionally.** The
+  saved call landed on the only step that catches "the repair made it wider"; a latency win must not
+  eat divergence control. `gate.rechecked` is `true` for every repaired result again.
+- **The default depth no longer touches the prompt.** `DEPTH - STANDARD` was the only change 0.8.0
+  made to the rewrite prompt, and it read as an affirmative instruction to fill in detail inside a
+  contract that already elaborates. The standard depth suffix is now empty, so the default path's
+  system prompt, user prompt, temperature and token budgets are **byte-identical to 0.7.1** —
+  verified by diffing the built prompts. `light` and `deep` remain explicit deviations.
+- The audit prompt now says that naming an addition in `DETAIL` is not a way of excusing it: if what
+  it names was not asked for, the rewrite is still `SCOPE_ADDED`.
+
 ## [0.8.2] - 2026-10-03
 
 ### Changed
@@ -106,7 +125,8 @@ developer preview and moves quickly. Patch bumps will not break anything.
 - Elaboration contract: unfold the intermediate detail a request entails, invent nothing beyond it.
   Seeds are expanded 10–25×; already-precise instructions are left alone.
 
-[Unreleased]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.2...HEAD
+[Unreleased]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.3...HEAD
+[0.8.3]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.7.1...v0.8.0
