@@ -2051,3 +2051,27 @@ test("拒绝时样本日志记录越线类别（诊断一次真实拒绝时最�
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+
+test("样本记录区分界面调用与脚本探针（否则验证脚本会淹没真实使用分布）", async () => {
+  const host = await import("../lib/index.js");
+  const dir = await mkdtemp(join(tmpdir(), "po-from-"));
+  const file = join(dir, "samples.jsonl");
+  try {
+    const webServer = makeWebServer();
+    host.apply(makeHostContext(webServer), { samples: file });
+    // 带 sessionId = 界面点击
+    const uiRes = makeResponse();
+    await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码", sessionId: "s-9" }) }), uiRes);
+    // 不带 sessionId = 脚本直接打路由
+    const scriptRes = makeResponse();
+    await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码" }) }), scriptRes);
+
+    const lines = (await readFile(file, "utf8")).trim().split("\n").map((l) => JSON.parse(l));
+    assert.equal(lines.length, 2);
+    assert.equal(lines[0].from, "ui", "带 sessionId 记为界面调用");
+    assert.equal(lines[1].from, "script", "不带 sessionId 记为脚本探针");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});

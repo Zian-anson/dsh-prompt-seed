@@ -9,6 +9,18 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-10-03
+
+### Added
+
+- **The event log records where a call came from** (`from: "ui" | "script"`, derived from whether a
+  session id was present). Without it the log cannot tell a real click from a verification probe, and
+  the difference turned out to be overwhelming: one full verification pass wrote **159 records of the
+  same handful of fixed inputs** into a log that held about **7 records of genuine use**. Every
+  question the log exists to answer — is the depth right, is the gate misfiring — is a question about
+  a distribution, and that distribution was 96% synthetic. The flooded log is archived beside the new
+  one rather than deleted.
+
 ## [0.8.6] - 2026-10-03
 
 ### Removed
@@ -182,7 +194,8 @@ developer preview and moves quickly. Patch bumps will not break anything.
 - Elaboration contract: unfold the intermediate detail a request entails, invent nothing beyond it.
   Seeds are expanded 10–25×; already-precise instructions are left alone.
 
-[Unreleased]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.6...HEAD
+[Unreleased]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.7...HEAD
+[0.8.7]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.3...v0.8.4

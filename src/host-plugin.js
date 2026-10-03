@@ -376,6 +376,11 @@ export function apply(ctx, config = {}) {
               code: result.ok ? "ok" : result.code,
               tier: result.ok ? result.tier : null,
               mode: isPreciseInstruction(text) ? "precise" : "elaborate",
+              // 调用来源：界面点击（带 sessionId）还是脚本直接打路由（不带）。
+              // 没有这个字段时，验证脚本的几百次探针会和真实使用混在一条日志里——
+              // 实测一次全量验证就写进 159 条固定输入，把"深度合不合适"这类
+              // 基于分布判断的问题彻底淹没。
+              from: typeof sessionId === "string" && sessionId !== "" ? "ui" : "script",
               depth: depthOf(body),
               // 闸门凭证与越线类别落盘：延迟归因（哪类越线走几次调用）和
               // "闸门是不是误判"都只能靠这两个字段回答。
