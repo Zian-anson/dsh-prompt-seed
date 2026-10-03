@@ -1,6 +1,6 @@
 {
   "name": "dsh-prompt-seed",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "DSH composer plugin: turn a one-line seed into a concrete, executable prompt — unfolding the detail the request entails while a semantic fidelity gate keeps the meaning intact. One click, one-click revert.",
   "type": "module",
   "license": "MIT",

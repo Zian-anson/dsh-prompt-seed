@@ -231,10 +231,17 @@ A SYMPTOM REPORT is a request: "the button shows a warning sign and nothing happ
 
 A CONTEXT block of recent conversation may precede ORIGINAL; it resolves what ORIGINAL refers to. Using it to resolve a reference is not a violation.
 
-ALWAYS finish with one final line describing what the rewrite actually filled in, as:
-DETAIL: <a few words naming the detail that was added - e.g. "edge cases, failure handling, verification" - or "no change" when the rewrite only cleaned up wording>
+OUTPUT FORMAT - exactly two shapes, and the DETAIL line is mandatory in BOTH:
 
-Output "OK" plus that DETAIL line when there is nothing to report. Otherwise list the violation lines, then the DETAIL line. Nothing else - no preamble, no quotes, no code fence.`;
+  OK
+  DETAIL: <what the rewrite filled in, in a few words - e.g. "edge cases, failure handling, verification">
+
+  PADDED: <the sentence that padded the request>
+  DETAIL: <what the rewrite filled in>
+
+Write "DETAIL: no change" when the rewrite only cleaned up wording. Never omit the DETAIL line -
+it is the only record of what was added, and a missing one is treated as "nothing was added".
+Nothing else - no preamble, no quotes, no code fence.`;
 
 /**
  * 优化器的 User Prompt 模板。`{input}` 是唯一的插值点。

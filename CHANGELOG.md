@@ -9,6 +9,22 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-03
+
+### Changed
+
+- The audit's `DETAIL` line is now an explicit mandatory part of the output format, with both
+  accepted shapes spelled out. Live measurement showed the model omitting it on roughly one run in
+  five, which left the credential blank; the wording now says a missing line is read as "nothing was
+  added". (Adherence after the change is pending a restart — see below.)
+
+### Documentation
+
+- Recorded the measured hot-swap behaviour: a **same-name reinstall does not reach the running
+  process** (Node's module cache is keyed by URL, and the path is unchanged), while installing under
+  a **different path** does. Verified on a live app in both directions using the frozen
+  `codeVersion`. The README's troubleshooting entry now says restart, and says why.
+
 ## [0.8.1] - 2026-10-03
 
 ### Fixed
@@ -90,7 +106,8 @@ developer preview and moves quickly. Patch bumps will not break anything.
 - Elaboration contract: unfold the intermediate detail a request entails, invent nothing beyond it.
   Seeds are expanded 10–25×; already-precise instructions are left alone.
 
-[Unreleased]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.7.1...v0.8.0
 [0.7.1]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.7.0...v0.7.1

@@ -232,11 +232,21 @@ model access and credential handling stay exactly where they already are.
 | Result was reverted automatically | the fidelity gate judged the rewrite would change your meaning | hover the shield for the violation list; the eye button lets you view the rejected draft anyway |
 | Output keeps getting rejected | the model is weak at instruction-following | point the row at a stronger model (`provider` + `model`) |
 | You edited the prompts but nothing changed | override files must be at `$DSH_HOME/prompt-seed/prompts/` (`system.md`, `user.md`, `audit.md`) | files are re-read on every request, so a correct path takes effect on the next click |
-| **You upgraded the plugin but behaviour is unchanged** | **host-half code cannot be hot-swapped** — the loader's resolution table is fixed at boot and the ESM cache is keyed by URL | **restart the app**; then `curl -s -X POST 'http://127.0.0.1:19387/api/prompt-seed/optimize?debug=1' -H 'content-type: application/json' --data '{"text":"hi"}'` and check `_debug.codeVersion` |
+| **You upgraded the plugin but behaviour is unchanged** | the host half is an ES module, and **Node's module cache is keyed by URL** — reinstalling the same package name lands on the same path, so the running process keeps executing the module it already loaded | **restart the app.** Then confirm with `curl -s -X POST 'http://127.0.0.1:19387/api/prompt-seed/optimize?debug=1' -H 'content-type: application/json' --data '{"text":"hi"}'` and check `_debug.codeVersion` |
 
-That last row is worth internalising: `disable` → `enable` only re-runs `apply` against the *cached*
-module. The reported `codeVersion` is read once at module load precisely so it tells you which code
-is actually running, rather than what happens to be on disk.
+That last row is worth internalising, and it was measured rather than assumed:
+
+| what changed | install path | host half picks it up |
+|---|---|---|
+| reinstall the same package name with new content | unchanged | **no** — the process keeps running the cached module until restart |
+| install under a different path (renamed package) | changed | **yes** — the cache misses and the new module loads |
+
+Both cases were observed directly on a running app, and the frozen-at-load `codeVersion` is what
+makes them distinguishable: after a same-name upgrade it kept reporting the previous version while
+the new one sat on disk, and after the rename it reported the new one immediately. `disable` →
+`enable` only re-runs `apply` against the *cached* module, so it does not help either. **Restart the
+app after a normal upgrade**, and check `_debug.codeVersion` instead of trusting the tarball you
+just installed.
 
 
 ## Development
