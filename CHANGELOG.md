@@ -9,6 +9,31 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.8.6] - 2026-10-03
+
+### Removed
+
+- **The status line above the composer is gone** (added in 0.8.4, removed one release later). It was
+  wrong in a way that should have been caught before shipping: it rendered as a **full-width banner
+  for a single line of text**, and it appeared for transient states that carry no information at all
+  — "正在优化…（再次点击可取消）" duplicated a spinner the button was already showing, and the
+  success credential duplicated the `✓ +131` badge that sits on the button itself. Only a rejected
+  run genuinely needs a resident explanation, and that case is rare enough that a banner which shifts
+  the composer on every click is not a trade worth making.
+
+  Two things made this hard to get right and easy to get wrong: the dock slot is full-width by
+  nature, so anything placed there is visually loud; and the layout cannot be seen from the
+  development side, so a visual change ships unverified. Rather than iterate blind a third time, the
+  dock registration, its component, its styles and the cross-slot store are all removed. The plugin
+  registers exactly one slot again.
+
+### Kept from 0.8.4
+
+- Rejection reasons still lead with the **violation class** ("增加了原本没有的要求") plus one short
+  example, in the button's tooltip. That message rewrite is what actually fixed the original problem
+  — the old text pasted the audit model's raw sentences into a 110-character wall. At ~50 characters
+  it reads fine as a tooltip.
+
 ## [0.8.5] - 2026-10-03
 
 ### Fixed
@@ -157,7 +182,8 @@ developer preview and moves quickly. Patch bumps will not break anything.
 - Elaboration contract: unfold the intermediate detail a request entails, invent nothing beyond it.
   Seeds are expanded 10–25×; already-precise instructions are left alone.
 
-[Unreleased]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.5...HEAD
+[Unreleased]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.6...HEAD
+[0.8.6]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.4...v0.8.5
 [0.8.4]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.2...v0.8.3

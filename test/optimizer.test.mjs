@@ -1490,7 +1490,8 @@ test("lib/client.js materialize 后导出可用的客户端插件，并注册按
   assert.deepEqual(exported.inject, ["slots"]);
   assert.equal(typeof exported.apply, "function");
 
-  // 槽位注册：按钮 + 状态行（两个独立槽位，各自渲染）
+  // 只注册一个槽位：输入框右侧的按钮。状态行（conversation.input.dock）在 0.8.4 试过，
+  // 0.8.6 撤掉——全宽横幅为一行字占满整行，且它对"正在优化"这类瞬时状态毫无信息量。
   const slotNames = [];
   const fakeSlots = {
     inject(name, cb) { slotNames.push(name); cb(); },
@@ -1504,7 +1505,7 @@ test("lib/client.js materialize 后导出可用的客户端插件，并注册按
     if (previousWindowForSlots === undefined) delete globalThis.window;
     else globalThis.window = previousWindowForSlots;
   }
-  assert.deepEqual(slotNames.sort(), ["conversation.input.dock", "conversation.input.right"]);
+  assert.deepEqual(slotNames, ["conversation.input.right"], "只挂按钮，不再挂状态行");
 
   const previousDocument = globalThis.document;
   const styleNodes = [];
@@ -1552,11 +1553,8 @@ test("lib/client.js materialize 后导出可用的客户端插件，并注册按
 
     exported.apply(ctx);
 
-    assert.deepEqual(injections.sort(), ["conversation.input.dock", "conversation.input.right"]);
-    assert.deepEqual(registrations.sort((a, b) => a.name.localeCompare(b.name)), [
-      { name: "conversation.input.dock", id: "prompt-seed", order: 15 },
-      { name: "conversation.input.right", id: "prompt-seed", order: -10 },
-    ]);
+    assert.deepEqual(injections, ["conversation.input.right"]);
+    assert.deepEqual(registrations, [{ name: "conversation.input.right", id: "prompt-seed", order: -10 }]);
     assert.deepEqual(effects, ["prompt-seed:styles"]);
     assert.equal(styleNodes.length, 1);
     assert.equal(styleNodes[0].attrs["data-dsh-plugin"], "prompt-seed");
@@ -1885,9 +1883,8 @@ test("客户端按钮真的渲染出正确形态（空草稿常驻、有内容�
     register(meta, render) { return { meta, render }; },
   };
   exported.apply({ slots, effect() {} });
-  const buttonSlot = registered.find(function (item) { return item.name === "conversation.input.right"; });
-  assert.ok(buttonSlot, "按钮必须注册到 conversation.input.right");
-  const render = buttonSlot.value.render;
+  assert.equal(registered.length, 1, "只注册一个槽位");
+  const render = registered[0].value.render;
 
   const previousWindow = globalThis.window;
   globalThis.window = { localStorage: { getItem: () => null, setItem() {} } };
@@ -2021,58 +2018,6 @@ test("修复契约含保守兜底：修不动就给轻润色稿，而不是赌�
 });
 
 
-test("状态行：只在有话说时出现，可关闭，新状态会重新展开", async () => {
-  const source = await readFile(join(root, "lib", "client.js"), "utf8");
-  let entry;
-  // eslint-disable-next-line no-new-func
-  new Function("window", source)({ __ModuleLoader__: { load: (value) => { entry = value; } } });
-
-  const React = {
-    createElement(type, props, children) {
-      if (typeof type === "function") return type(props || {});
-      return { type, props: props || {}, children: children === undefined ? [] : [].concat(children) };
-    },
-    useState(initial) { return [typeof initial === "function" ? initial() : initial, () => {}]; },
-    useRef(value) { return { current: value }; },
-    useEffect() {},
-  };
-  const exported = entry.factory(() => React);
-  const registered = [];
-  exported.apply({
-    slots: {
-      inject(name, cb) { registered.push({ name, value: cb() }); },
-      register(meta, render) { return { meta, render }; },
-    },
-    effect() {},
-  });
-  const dock = registered.find((item) => item.name === "conversation.input.dock");
-  assert.ok(dock, "状态行必须注册到 conversation.input.dock");
-  assert.equal(dock.value.meta.id, "prompt-seed");
-  assert.equal(dock.value.meta.order, 15, "order 15：排在 todo(0)/goal(10) 之后、queue(20) 之前");
-  const render = dock.value.render;
-
-  const previousWindow = globalThis.window;
-  globalThis.window = { localStorage: { getItem: () => null, setItem() {} } };
-  try {
-    // 无内容时不占位
-    assert.equal(render({}), null, "没有话说时不得占位");
-    // 发布一条状态 → 渲染出状态行
-    const button = registered.find((item) => item.name === "conversation.input.right");
-    const buttonRender = button.value.render;
-    const element = buttonRender({
-      useInput(selector) { return selector({ draft: "", draftRev: 1, phase: "plain", occurrences: [] }); },
-      inputActions: { setDraft() {} },
-      t: (key) => key,
-    });
-    assert.ok(element, "按钮必须渲染");
-    // 直接驱动共享状态：状态行订阅的是同一个模块级 store
-    const statusElement = render({});
-    assert.ok(statusElement === null || statusElement.props["data-testid"] === "prompt-seed-status");
-  } finally {
-    if (previousWindow === undefined) delete globalThis.window;
-    else globalThis.window = previousWindow;
-  }
-});
 
 
 test("拒绝时样本日志记录越线类别（诊断一次真实拒绝时最需要的字段）", async () => {
