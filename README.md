@@ -229,7 +229,7 @@ model access and credential handling stay exactly where they already are.
 | Click does nothing | the route is not registered | check the host log for the `[prompt-seed] loaded` banner; confirm `--dump-config` shows the row |
 | `模型服务不可用` / `未找到可用的默认模型` | host `llm` or `agentDefaultModel` not mounted | configure a session model, or set `provider` + `model` in the row config |
 | Result is longer/shorter than you want | depth setting | **right-click the ✦ button** to cycle `auto / light / standard / deep`; the choice is remembered |
-| Result was reverted automatically | the fidelity gate judged the rewrite would change your meaning | hover the shield for the violation list; the eye button lets you view the rejected draft anyway |
+| Result was reverted automatically | the fidelity gate judged the rewrite would change your meaning | the status line above the composer names the violation class; the eye button lets you view the rejected draft anyway |
 | Output keeps getting rejected | the model is weak at instruction-following | point the row at a stronger model (`provider` + `model`) |
 | You edited the prompts but nothing changed | override files must be at `$DSH_HOME/prompt-seed/prompts/` (`system.md`, `user.md`, `audit.md`) | files are re-read on every request, so a correct path takes effect on the next click |
 | **You upgraded the plugin but behaviour is unchanged** | the host half is an ES module, and **Node's module cache is keyed by URL** — reinstalling the same package name lands on the same path, so the running process keeps executing the module it already loaded | **restart the app.** Then confirm with `curl -s -X POST 'http://127.0.0.1:19387/api/prompt-seed/optimize?debug=1' -H 'content-type: application/json' --data '{"text":"hi"}'` and check `_debug.codeVersion` |
@@ -324,7 +324,7 @@ clean clone.
 2. UI strings are Chinese-only; the `locale` service is not wired.
 3. Non-streaming, and the gate costs a second call: 1 call when the precise-input shortcut applies,
    2 on the happy path, 4 when a repair is needed (the repaired draft is always re-audited).
-   Measured 0.9 s (precise input, audit skipped) to ~14 s (worst case, slow provider).
+   Measured 0.9 s (precise input, audit skipped) to ~20 s (worst case, slow provider).
 4. `TONE_SHIFTED` and `PADDED` are judgement calls by the audit model, not deterministic checks —
    a misjudgement inside the tolerance band is the residual fidelity risk.
 5. The audit judge and the rewriter share the routed model by default; routing the audit to a

@@ -9,6 +9,29 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-10-03
+
+### Added
+
+- **A status line above the composer** (`conversation.input.dock`, order 15, `replaceRisk: none`).
+  The credential and the rejection reason were only reachable through the `title` attribute — a
+  medium that appears after a delay, cannot wrap or be laid out, cannot be dismissed, and vanishes
+  when the mouse moves. Both need a resident, readable, closable carrier. It renders nothing when
+  there is nothing to say, and closing a message only closes that message.
+- **Rejections now report the violation class first** — "增加了原本没有的要求" — followed by one
+  concrete example, instead of pasting the audit model's raw sentences into the interface, which
+  read like an internal log and left the user to guess why it counted as a problem. The host sends
+  structured `violations: [{kind, label, text}]` for this.
+
+### Changed
+
+- **A rejection is no longer a dead end.** The repair contract now tells the model: if fixing the
+  flagged problems would leave nothing worth adding, return a lightly polished version of the
+  original instead — same content, same breadth, nothing new — rather than gambling on keeping the
+  flagged material. A light rewrite that passes the re-audit is something the user can use; a second
+  rejection hands them nothing. Cost: zero extra calls (the instruction rides on the repair call
+  that was already being made).
+
 ## [0.8.3] - 2026-10-03
 
 ### Fixed
@@ -125,7 +148,8 @@ developer preview and moves quickly. Patch bumps will not break anything.
 - Elaboration contract: unfold the intermediate detail a request entails, invent nothing beyond it.
   Seeds are expanded 10–25×; already-precise instructions are left alone.
 
-[Unreleased]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.3...HEAD
+[Unreleased]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.4...HEAD
+[0.8.4]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.3...v0.8.4
 [0.8.3]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.2...v0.8.3
 [0.8.2]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.0...v0.8.1
