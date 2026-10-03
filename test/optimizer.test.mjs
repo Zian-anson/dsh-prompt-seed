@@ -1,0 +1,1974 @@
+/**
+ * prompt-seed 单元测试
+ * 运行：npm test
+ */
+
+import assert from "node:assert/strict";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { Readable } from "node:stream";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+
+import {
+  ERROR_CODES,
+  assessInflation,
+  collectStream,
+  createOptimizerMessage,
+  isSubstantivelyUnchanged,
+  looksOpenEnded,
+  isContentFree,
+  isPreciseInstruction,
+  isStructuralOnly,
+  preservesAnchors,
+  looksSeedish,
+  optimizePromptText,
+  parseAuditVerdict,
+  resolveRoute,
+} from "../src/host-core.js";
+import {
+  AUDIT_SYSTEM_TEMPLATE,
+  DEPTH_DEEP_SUFFIX,
+  DEPTH_LIGHT_SUFFIX,
+  MAX_TEXT_LENGTH,
+  PRECISE_SUFFIX,
+  SYSTEM_SUFFIX,
+  SYSTEM_TEMPLATE,
+  USER_TEMPLATE,
+  buildSystemPrompt,
+  buildSystemPromptFor,
+  depthSuffix,
+  detectScript,
+  normalizeResult,
+  renderAuditUserPrompt,
+  renderContextBlock,
+  renderUserPrompt,
+  setTemplateOverrides,
+  stripCodeFence,
+  stripLeadingLabel,
+  stripWrappingQuotes,
+  validateInput,
+} from "../src/prompt-templates.js";
+import { extractRecentContext, needsContext } from "../src/session-context.js";
+import { appendSample, resolveSamplePath } from "../src/sample-log.js";
+
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+/** 构造一个按脚本吐 chunk 的假 llm 服务。 */
+function fakeLlm(chunks) {
+  const seen = [];
+  return {
+    seen,
+    stream(options) {
+      seen.push(options);
+      return (async function* generate() {
+        for (const chunk of chunks) yield chunk;
+      })();
+    },
+  };
+}
+
+/** 把一段文本包装成一次成功的模型响应。 */
+function textChunks(text) {
+  return [{ type: "text-delta", index: 0, text }, { type: "finish", reason: { kind: "stop" } }];
+}
+
+/**
+ * 按调用次序回放不同响应的假 llm：responses[i] 是第 i+1 次调用的 chunk 序列，
+ * 用尽后重复最后一组。保真闸门会连续发起改写/审判/重跑多次调用，需要这种脚本。
+ */
+function scriptedLlm(responses) {
+  const seen = [];
+  return {
+    seen,
+    stream(options) {
+      seen.push(options);
+      const chunks = responses[Math.min(seen.length - 1, responses.length - 1)];
+      return (async function* generate() {
+        for (const chunk of chunks) yield chunk;
+      })();
+    },
+  };
+}
+
+const ROUTE = { provider: "test", model: "test-model" };
+
+// --------------------------------------------------------------------------
+// prompt-templates
+// --------------------------------------------------------------------------
+
+test("stripWrappingQuotes 去掉成对的首尾引号", () => {
+  assert.equal(stripWrappingQuotes('"hello world"'), "hello world");
+  assert.equal(stripWrappingQuotes("“你好”"), "你好");
+  assert.equal(stripWrappingQuotes("'quoted'"), "quoted");
+  assert.equal(stripWrappingQuotes("「引用」"), "引用");
+});
+
+test("stripWrappingQuotes 不动不成对或内部引号", () => {
+  assert.equal(stripWrappingQuotes('he said "hi" loudly'), 'he said "hi" loudly');
+  assert.equal(stripWrappingQuotes('"unbalanced'), '"unbalanced');
+  assert.equal(stripWrappingQuotes(""), "");
+});
+
+test("stripCodeFence 去掉 markdown 围栏", () => {
+  assert.equal(stripCodeFence("```\ninner\n```"), "inner");
+  assert.equal(stripCodeFence("```text\ninner\n```"), "inner");
+  assert.equal(stripCodeFence("no fence"), "no fence");
+});
+
+test("stripLeadingLabel 去掉模型自加的前缀", () => {
+  assert.equal(stripLeadingLabel("Enhanced prompt: do X"), "do X");
+  assert.equal(stripLeadingLabel("优化后的提示词：做 X"), "做 X");
+  assert.equal(stripLeadingLabel("普通文本"), "普通文本");
+});
+
+test("normalizeResult 组合清洗：围栏 + 引号 + 标签", () => {
+  const raw = '```\nEnhanced prompt: "帮我写一个单元测试"\n```';
+  assert.equal(normalizeResult(raw), "帮我写一个单元测试");
+});
+
+test("validateInput 覆盖空、超长、正常", () => {
+  assert.equal(validateInput(""), "empty_input");
+  assert.equal(validateInput("   "), "empty_input");
+  assert.equal(validateInput(undefined), "empty_input");
+  assert.equal(validateInput(42), "empty_input");
+  assert.equal(validateInput("x".repeat(MAX_TEXT_LENGTH + 1)), "input_too_long");
+  assert.equal(validateInput("正常输入"), null);
+});
+
+test("detectScript 区分中英混排", () => {
+  assert.equal(detectScript("帮我看看这段代码"), "cjk");
+  assert.equal(detectScript("explain this code"), "latin");
+  assert.equal(detectScript("这段代码有 bug，can you help"), "mixed");
+  assert.equal(detectScript("   "), "unknown");
+  assert.equal(detectScript("12345 !!!"), "unknown");
+});
+
+test("renderUserPrompt 正确插值且保留模板主体", () => {
+  const rendered = renderUserPrompt("帮我看看这个登录接口有没有问题");
+  assert.ok(rendered.includes("帮我看看这个登录接口有没有问题"));
+  assert.ok(rendered.includes("Language. This outranks everything else on this page."));
+  assert.ok(!rendered.includes("{input}"));
+  // 无上下文时不出现 CONTEXT 段
+  assert.ok(!rendered.includes("CONTEXT"));
+});
+
+test("renderContextBlock：上下文块渲染与防御", () => {
+  const context = [
+    { role: "user", text: "登录接口有时候 500" },
+    { role: "assistant", text: "看起来是 token 校验的边界情况" },
+  ];
+  const withContext = renderUserPrompt("帮我修一下这个", context);
+  assert.ok(withContext.includes("CONTEXT (recent conversation; use ONLY to resolve what the request refers to):"));
+  assert.ok(withContext.includes("[user] 登录接口有时候 500"));
+  assert.ok(withContext.includes("[assistant] 看起来是 token 校验的边界情况"));
+  assert.ok(withContext.includes("帮我修一下这个"));
+  // CONTEXT 在 REQUEST 之前（先指代来源，后请求本体）
+  assert.ok(withContext.indexOf("CONTEXT") < withContext.indexOf("REQUEST:"));
+  // 审判 prompt 同样携带上下文（蕴含判定需要知情指代来源）
+  assert.ok(renderAuditUserPrompt("a", "b", context).includes("[user] 登录接口有时候 500"));
+  // 非法形状静默降级为空
+  assert.equal(renderContextBlock(undefined), "");
+  assert.equal(renderContextBlock([]), "");
+  assert.equal(renderContextBlock([{ role: "user", text: "   " }]), "");
+});
+
+test("两条模板各自独立声明语言一致性（设计原则 ①）", () => {
+  // 中英混排产品里模型极易把中文输入改写成英文；单处声明压不住，必须各写一次。
+  assert.ok(SYSTEM_TEMPLATE.includes("This rule outranks every other instruction"));
+  assert.ok(USER_TEMPLATE.includes("This outranks everything else on this page"));
+  assert.ok(USER_TEMPLATE.includes("Never name the language"));
+});
+
+test("混排语言规则不自相矛盾", () => {
+  // 回归守卫：早期版本写着"不要翻译任何部分"，但模型对混排输入会把连接语句
+  // 归并到主导语言——这是更好的行为，矛盾在规则不在模型。规则已改为
+  // "保留术语 + 连接语句用主导语言"，此处锁死，避免回退。
+  assert.ok(!USER_TEMPLATE.includes("Do not translate any part of it"));
+  assert.ok(!SYSTEM_TEMPLATE.includes("Do not flatten it into one language"));
+  assert.ok(USER_TEMPLATE.includes("do not move it into a different single language"));
+  assert.ok(SYSTEM_TEMPLATE.includes("do not move the request into a different single language"));
+  // 混排示例必须保留用户用的术语
+  assert.ok(USER_TEMPLATE.includes("这个函数有 bug"));
+});
+
+test("模板禁止一切 meta 内容与作答（设计原则 ②③）", () => {
+  assert.ok(SYSTEM_TEMPLATE.includes("You never carry out the request itself"));
+  assert.ok(SYSTEM_TEMPLATE.includes("Answer the request, even partially"));
+  assert.ok(USER_TEMPLATE.includes("Contain answers. When REQUEST asks a question, return a better question"));
+  assert.ok(USER_TEMPLATE.includes("no code fence, no surrounding quotation marks"));
+  assert.ok(SYSTEM_SUFFIX.includes("never an answer"));
+});
+
+test("补全契约：补全中间细节是产品本体，曲解才是红线（设计原则 ④）", () => {
+  // v0.6 核心界线
+  assert.ok(SYSTEM_TEMPLATE.includes("ELABORATE, NEVER DISTORT"));
+  assert.ok(SYSTEM_TEMPLATE.includes("this is the product, not a risk"));
+  assert.ok(SYSTEM_TEMPLATE.includes("KEEP EXACTLY AS THEY MEANT IT"));
+  assert.ok(SYSTEM_TEMPLATE.includes("NEVER (each of these distorts the request)"));
+  // 补全深度跟随"用户没说多少"
+  assert.ok(SYSTEM_TEMPLATE.includes("Depth scales with what was left unsaid"));
+  assert.ok(SYSTEM_TEMPLATE.includes("A bare seed grows a lot"));
+  // 两侧旧病都不得回退
+  assert.ok(!SYSTEM_TEMPLATE.includes("ENTAILMENT vs INVENTION"), "v0.3 蕴含契约已被补全契约取代");
+  assert.ok(
+    !SYSTEM_TEMPLATE.includes("Do not introduce a language, framework, library, or tool the user did not mention"),
+    "禁止新增技术栈的旧红线已废除：为开放选择给具体默认值属于补全",
+  );
+  assert.ok(!SYSTEM_TEMPLATE.includes("IF IN DOUBT, CHANGE LESS"), "无条件少改指令已废除");
+  assert.ok(!SYSTEM_TEMPLATE.includes("roughly 800 characters"), "长度配额已废除");
+});
+
+test("用户已做的选择不得被覆盖（新红线）", () => {
+  assert.ok(SYSTEM_TEMPLATE.includes("Never override, replace, or drop one"));
+  assert.ok(USER_TEMPLATE.includes("Contradict a choice the user made"));
+  assert.ok(AUDIT_SYSTEM_TEMPLATE.includes("CONTRADICTED"));
+});
+
+test("语气是契约的一部分（新红线）", () => {
+  assert.ok(SYSTEM_TEMPLATE.includes("Their voice. A casual message stays casual"));
+  assert.ok(SYSTEM_SUFFIX.includes("Keep the user's voice"));
+  assert.ok(AUDIT_SYSTEM_TEMPLATE.includes("TONE_SHIFTED"));
+});
+
+test("范围开放的保护写进了模板（设计原则 ⑥）", () => {
+  // 不得替用户选类别 / 不得闭合开放范围
+  assert.ok(SYSTEM_TEMPLATE.includes('must not become "security problems"'));
+  assert.ok(USER_TEMPLATE.includes('"Any problems?" stays open across all kinds of problems'));
+  assert.ok(USER_TEMPLATE.includes("Keep the breadth REQUEST set"));
+});
+
+test("示例区是三段对照：TOO PASSIVE / RIGHT / WRONG 同时画两条边界（设计原则 ⑦）", () => {
+  // 下边界：原样返回是失职（v0.3–v0.5 的病），必须作为反例教学
+  assert.ok(USER_TEMPLATE.includes("TOO PASSIVE - fails the user"));
+  assert.ok(USER_TEMPLATE.includes("the seed came back"));
+  // 上边界：曲解（v0.1 的病），必须以反例身份出现并解释为什么错
+  assert.ok(USER_TEMPLATE.includes("WRONG - distorts the request"));
+  assert.ok(USER_TEMPLATE.includes("a different and much bigger product"));
+  assert.ok(USER_TEMPLATE.includes("rank them by expected impact"));
+  // RIGHT 侧：补全到细节的正例（而不是旧的"展开蕴含为止"正例）
+  assert.ok(USER_TEMPLATE.includes("帮我做一个导出报表功能："));
+  assert.ok(USER_TEMPLATE.includes("near-unchanged is CORRECT"));
+  // 已明确指令的"加戏"必须作为反例出现（v0.6.0 线上实测病征）
+  assert.ok(USER_TEMPLATE.includes("WRONG - over-elaboration"));
+  assert.ok(USER_TEMPLATE.includes("the added procedure and failure clause are padding, not help"));
+  // meta 泄漏反例保留（旧守卫）
+  assert.ok(USER_TEMPLATE.includes("WRONG - this leaks meta text"));
+  assert.ok(USER_TEMPLATE.includes("RIGHT:"));
+  assert.ok(USER_TEMPLATE.includes("Input:"));
+});
+
+test("长度约束：长度跟随补全，不设配额也不压缩", () => {
+  assert.ok(SYSTEM_TEMPLATE.includes("Length follows the elaboration"));
+  assert.ok(!SYSTEM_TEMPLATE.includes("Length follows the entailment"), "旧的蕴含长度规则已废除");
+  // 两侧旧病都不得回退
+  assert.ok(!SYSTEM_TEMPLATE.includes("Stay close to the input's own length"), "v0.2 压缩指令已废除");
+  assert.ok(!USER_TEMPLATE.includes("Stay close to REQUEST's own length"), "v0.2 压缩指令已废除");
+});
+
+test("buildSystemPromptFor 只在有脚本信息时追加语言提示", () => {
+  assert.ok(buildSystemPromptFor("explain this code").includes("predominantly Latin script"));
+  assert.ok(buildSystemPromptFor("解释这段代码").includes("predominantly CJK"));
+  assert.ok(!buildSystemPromptFor("1234").includes("Language check"));
+});
+
+// --------------------------------------------------------------------------
+// session-context
+// --------------------------------------------------------------------------
+
+test("extractRecentContext：只取真实用户话轮，跳过注入与噪声", () => {
+  const surface = {
+    events: [
+      { type: "turn/start" },
+      { type: "user/message", data: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "现有的项目包是有一些问题的" }] } },
+      // 注入快照（runtime-context）：source.kind 区分，绝不能进入上下文
+      { type: "user/message", data: { role: "user", source: { kind: "runtime-context" }, content: [{ type: "text", text: "Current runtime context. This snapshot supersedes..." }] } },
+      { type: "user/message", data: { role: "user", source: { kind: "time-context" }, content: [{ type: "text", text: "Time sampled while preparing turn..." }] } },
+      // agent 会话尾部的典型噪声：assistant 步骤消息与工具结果
+      { type: "assistant/message", data: { message: { role: "assistant", content: [{ type: "text", text: "会话 id 格式正确。" }] } } },
+      { type: "tool/result", data: { message: { role: "tool", content: [] } } },
+      { type: "user/message", data: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "没问题，act。" }] } },
+    ],
+  };
+  const context = extractRecentContext(surface);
+  // 只取真实用户话轮，最近 2 条，时间正序
+  assert.deepEqual(context, [
+    { role: "user", text: "现有的项目包是有一些问题的" },
+    { role: "user", text: "没问题，act。" },
+  ]);
+  // 注入快照与 assistant 步骤绝不出现
+  const joined = JSON.stringify(context);
+  assert.ok(!joined.includes("runtime context"), "注入快照不得进入上下文");
+  assert.ok(!joined.includes("会话 id"), "assistant 步骤噪声不得进入上下文");
+
+  // 超长话轮截断
+  const long = "x".repeat(500);
+  const truncated = extractRecentContext({
+    events: [{ type: "user/message", data: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: long }] } }],
+  });
+  assert.equal(truncated[0].text.length, 301);
+  assert.ok(truncated[0].text.endsWith("…"));
+
+  // 旧形状兼容：无 source 字段的真实消息仍可提取（kind === undefined 不视为注入）
+  assert.deepEqual(
+    extractRecentContext({ events: [{ type: "user/message", data: { role: "user", content: "纯文本输入" } }] }),
+    [{ role: "user", text: "纯文本输入" }],
+  );
+
+  // 防御降级：形状漂移、空事件、非对象一律 undefined
+  assert.equal(extractRecentContext(undefined), undefined);
+  assert.equal(extractRecentContext(null), undefined);
+  assert.equal(extractRecentContext({}), undefined);
+  assert.equal(extractRecentContext({ events: [] }), undefined);
+  assert.equal(extractRecentContext({ events: [{ type: "user/message", data: null }] }), undefined);
+  // 只剩注入消息时等于无上下文
+  assert.equal(
+    extractRecentContext({ events: [{ type: "user/message", data: { role: "user", source: { kind: "time-context" }, content: [{ type: "text", text: "Time sampled..." }] } }] }),
+    undefined,
+  );
+});
+
+// --------------------------------------------------------------------------
+// 拒绝样本落盘
+// --------------------------------------------------------------------------
+
+test("resolveSamplePath：默认落 DSH_HOME，字符串自定义，false 关闭", () => {
+  const previous = process.env.DSH_HOME;
+  try {
+    process.env.DSH_HOME = "/tmp/dsh-home-test";
+    assert.equal(resolveSamplePath(undefined), "/tmp/dsh-home-test/prompt-seed/samples.jsonl");
+    assert.equal(resolveSamplePath("/tmp/custom.jsonl"), "/tmp/custom.jsonl");
+    assert.equal(resolveSamplePath(false), null, "samples:false 完全关闭采样");
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+  }
+});
+
+test("appendSample：写入 JSONL 并截断超长输入，失败静默", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "po-samples-"));
+  const file = join(dir, "nested", "samples.jsonl");
+  try {
+    const long = "x".repeat(5000);
+    assert.equal(await appendSample(file, { time: "t", code: "fidelity_rejected", input: long, added: ["a"] }), true);
+    const lines = (await readFile(file, "utf8")).trim().split("\n");
+    assert.equal(lines.length, 1);
+    const record = JSON.parse(lines[0]);
+    assert.equal(record.input.length, 4000, "超长输入必须截断");
+    assert.deepEqual(record.added, ["a"]);
+
+    // 再追加一条：JSONL 是追加语义
+    await appendSample(file, { time: "t2", code: "fidelity_rejected", input: "短", added: [] });
+    assert.equal((await readFile(file, "utf8")).trim().split("\n").length, 2);
+
+    // 非法路径：返回 false，不抛
+    assert.equal(await appendSample("", { input: "x" }), false);
+    assert.equal(await appendSample(null, { input: "x" }), false);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// --------------------------------------------------------------------------
+// host-core
+// --------------------------------------------------------------------------
+
+test("collectStream 拼接 text-delta 并识别终止失败", async () => {
+  const ok = await collectStream(
+    (async function* g() {
+      yield { type: "block-start", index: 0, blockType: "text" };
+      yield { type: "text-delta", index: 0, text: "abc" };
+      yield { type: "text-delta", index: 0, text: "def" };
+      yield { type: "finish", reason: { kind: "stop" } };
+    })(),
+  );
+  assert.equal(ok.text, "abcdef");
+  assert.equal(ok.failure, null);
+  assert.equal(ok.finish, "stop");
+
+  const failed = await collectStream(
+    (async function* g() {
+      yield { type: "text-delta", index: 0, text: "partial" };
+      yield { type: "finish", reason: { kind: "error", failure: { code: "rate_limit", message: "429" } } };
+    })(),
+  );
+  assert.equal(failed.text, "partial");
+  assert.equal(failed.failure.message, "429");
+});
+
+test("createOptimizerMessage 形状满足 Message 契约", () => {
+  const message = createOptimizerMessage("hello");
+  assert.equal(message.role, "user");
+  assert.equal(message.source.kind, "plugin");
+  assert.equal(message.content[0].type, "text");
+  assert.ok(typeof message.id === "string" && message.id.length > 0);
+});
+
+test("resolveRoute 读取 provider/model 并忽略空 reasoningEffort", () => {
+  assert.deepEqual(resolveRoute({ currentSelection: () => ({ provider: "p", model: "m" }) }), {
+    provider: "p",
+    model: "m",
+  });
+  assert.deepEqual(resolveRoute({ currentSelection: () => ({ provider: "p", model: "m", reasoningEffort: "high" }) }), {
+    provider: "p",
+    model: "m",
+    reasoningEffort: "high",
+  });
+  assert.equal(resolveRoute({ currentSelection: () => ({ provider: "p", model: "m", reasoningEffort: "  " }) }).reasoningEffort, undefined);
+  assert.equal(resolveRoute(undefined), undefined);
+  assert.equal(resolveRoute({ currentSelection: () => ({ provider: "p" }) }), undefined);
+  assert.equal(resolveRoute({ currentSelection: () => { throw new Error("boom"); } }), undefined);
+});
+
+test("optimizePromptText 成功路径：清洗后返回", async () => {
+  const llm = fakeLlm([
+    { type: "text-delta", index: 0, text: '```\nEnhanced prompt: "' },
+    { type: "text-delta", index: 0, text: "请解释这段代码的功能" },
+    { type: "text-delta", index: 0, text: '"\n```' },
+    { type: "finish", reason: { kind: "stop" } },
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "解释代码" });
+  assert.deepEqual(result, { ok: true, text: "请解释这段代码的功能", tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+
+  // 请求参数契约
+  const sent = llm.seen[0];
+  assert.equal(sent.provider, "test");
+  assert.equal(sent.model, "test-model");
+  assert.ok(sent.system.includes("You expand prompts for a coding assistant"));
+  assert.equal(sent.messages.length, 1);
+  assert.ok(sent.messages[0].content[0].text.includes("解释代码"));
+});
+
+test("optimizePromptText 不透传 reasoningEffort 但传递 signal", async () => {
+  const llm = fakeLlm([{ type: "text-delta", index: 0, text: "ok" }, { type: "finish", reason: { kind: "stop" } }]);
+  const controller = new AbortController();
+  await optimizePromptText({
+    llm,
+    route: { ...ROUTE, reasoningEffort: "high" },
+    text: "帮我看看这段代码",
+    signal: controller.signal,
+  });
+  // 改写是轻任务：透传 max 档推理实测会让输出在"展开/原样"间发散（方差来源），不透传
+  assert.equal(llm.seen[0].reasoningEffort, undefined, "改写调用不透传 reasoningEffort");
+  assert.equal(llm.seen[0].signal, controller.signal);
+});
+
+test("optimizePromptText 错误分支全覆盖", async () => {
+  const happy = fakeLlm([{ type: "text-delta", index: 0, text: "ok" }, { type: "finish", reason: { kind: "stop" } }]);
+
+  assert.equal((await optimizePromptText({ llm: happy, route: ROUTE, text: "  " })).code, ERROR_CODES.EMPTY_INPUT);
+  assert.equal(
+    (await optimizePromptText({ llm: happy, route: ROUTE, text: "x".repeat(MAX_TEXT_LENGTH + 1) })).code,
+    ERROR_CODES.INPUT_TOO_LONG,
+  );
+  assert.equal((await optimizePromptText({ llm: undefined, route: ROUTE, text: "帮我看看这段代码" })).code, ERROR_CODES.LLM_UNAVAILABLE);
+  assert.equal((await optimizePromptText({ llm: happy, route: undefined, text: "帮我看看这段代码" })).code, ERROR_CODES.MODEL_UNAVAILABLE);
+
+  const erroring = fakeLlm([{ type: "finish", reason: { kind: "error", failure: { code: "boom", message: "kaboom" } } }]);
+  const errored = await optimizePromptText({ llm: erroring, route: ROUTE, text: "帮我看看这段代码" });
+  assert.equal(errored.code, ERROR_CODES.LLM_ERROR);
+  assert.equal(errored.error, "kaboom");
+
+  const throwing = { stream() { throw new Error("network down"); } };
+  const thrown = await optimizePromptText({ llm: throwing, route: ROUTE, text: "帮我看看这段代码" });
+  assert.equal(thrown.code, ERROR_CODES.LLM_ERROR);
+  assert.equal(thrown.error, "network down");
+
+  const empty = fakeLlm([{ type: "text-delta", index: 0, text: '  ""  ' }, { type: "finish", reason: { kind: "stop" } }]);
+  assert.equal((await optimizePromptText({ llm: empty, route: ROUTE, text: "帮我看看这段代码" })).code, ERROR_CODES.EMPTY_RESULT);
+});
+
+test("finish=max-tokens 一律拒绝，即使已经产出正文", async () => {
+  // 依据：真实模型实测——被截断的 prompt 写进输入框比报错更危险。
+  const partial = fakeLlm([
+    { type: "text-delta", index: 0, text: "请检查这段代码是否存在语法错误、逻辑缺陷、边界情况，" },
+    { type: "finish", reason: { kind: "max-tokens" } },
+  ]);
+  const result = await optimizePromptText({ llm: partial, route: ROUTE, text: "看看代码" });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, ERROR_CODES.TRUNCATED);
+  assert.equal(result.text, undefined, "截断结果绝不能回填输入框");
+  assert.equal(result.error, "结果被截断，请缩短输入后重试");
+
+  // 空正文 + max-tokens 同样走 truncated，而不是落到含义模糊的 empty_result
+  const nothing = fakeLlm([{ type: "finish", reason: { kind: "max-tokens" } }]);
+  assert.equal((await optimizePromptText({ llm: nothing, route: ROUTE, text: "帮我看看这段代码" })).code, ERROR_CODES.TRUNCATED);
+});
+
+test("optimizePromptText 失败时绝不清空调用方输入", async () => {
+  const throwing = { stream() { throw new Error("x"); } };
+  const result = await optimizePromptText({ llm: throwing, route: ROUTE, text: "keep me" });
+  assert.equal(result.ok, false);
+  assert.equal(result.text, undefined);
+  assert.ok(typeof result.error === "string");
+});
+
+// --------------------------------------------------------------------------
+// 保真闸门：粗筛、审判归一、处置矩阵
+// --------------------------------------------------------------------------
+
+test("assessInflation 粗筛：发明式膨胀命中，蕴含展开不误杀", () => {
+  // 短输入 + 发明式膨胀比（>3）→ bloated
+  const bloated = assessInflation("看看代码", "x".repeat(100));
+  assert.equal(bloated.bloated, true);
+  assert.equal(bloated.suspicious, true);
+  assert.ok(bloated.ratio > 20);
+
+  // 蕴含展开的正常区间（1.2–2.5×）不得命中（v0.2 的 2.0 阈值会误杀这类展开）
+  const unfolded = assessInflation("帮我看看这个登录接口有没有问题", "请检查这个登录接口是否存在问题；如有，指出具体是什么问题、出现在哪里。");
+  assert.ok(unfolded.ratio > 1.5 && unfolded.ratio <= 2.5, `ratio 应落在蕴含区间，实际 ${unfolded.ratio.toFixed(2)}`);
+  assert.equal(unfolded.bloated, false, "蕴含展开不应被标记为膨胀");
+  assert.equal(unfolded.suspicious, false);
+
+  // 开放式输入 + 改写含发明交付物 → openEndedClosed
+  const closed = assessInflation("帮我看看这个接口有没有问题", "请审查该接口的安全问题，并输出对比表格与选型建议");
+  assert.equal(closed.openEndedClosed, true);
+  assert.equal(closed.suspicious, true);
+
+  // 开放式输入 + 蕴含展开 → 不命中
+  const fine = assessInflation("帮我看看这个接口有没有问题", "请检查这个接口是否存在问题");
+  assert.equal(fine.openEndedClosed, false);
+  assert.equal(fine.bloated, false);
+  assert.equal(fine.suspicious, false);
+
+  // 长输入的正常展开（≥200 字符）不因比率触发（阈值只在短输入上生效）
+  const longInput = "请修复 src/a.js 中 render 函数的空指针问题：当 config 为 undefined 时第 42 行的 config.theme 会抛出 TypeError，堆栈指向 render(src/a.js:42)，先在本地复现，再修复并补充回归测试覆盖 config 缺失的分支场景";
+  const longOut = longInput + "，验证通过后说明改动点。";
+  const longCase = assessInflation(longInput, longOut);
+  assert.equal(longCase.bloated, false);
+});
+
+test("isSubstantivelyUnchanged：标点/敬语/大小写/近义替换级微调算未变，蕴含展开算已变", () => {
+  const input = "帮我看看这个登录接口有没有问题";
+  // 只加问号/句号/请 → 未变（v0.3.1 实测的平庸输出形态）
+  assert.equal(isSubstantivelyUnchanged(input, "帮我看看这个登录接口有没有问题？"), true);
+  assert.equal(isSubstantivelyUnchanged(input, "请帮我看看这个登录接口有没有问题。"), true);
+  // 大小写 + 句号微调 → 未变（v0.3.3 英文案例逃逸形态）
+  assert.equal(isSubstantivelyUnchanged("make the dashboard faster", "Make the dashboard faster."), true);
+  // 近义替换（怎么→如何）→ 未变（v0.3.3 中文案例逃逸形态）
+  assert.equal(isSubstantivelyUnchanged("调研一下这个功能该怎么开发", "请调研一下这个功能该如何开发。"), true);
+  // 蕴含展开 → 已变
+  assert.equal(isSubstantivelyUnchanged(input, "帮我看看这个登录接口有没有问题；如果有，指出是什么问题。"), false);
+  assert.equal(isSubstantivelyUnchanged("make the dashboard faster", "Find what makes the dashboard slow and fix it."), false);
+  assert.equal(isSubstantivelyUnchanged("", "anything"), false);
+});
+
+test("looksOpenEnded：开放式、问句与短祈使式命中，明确指令不命中", () => {
+  assert.equal(looksOpenEnded("帮我看看这个登录接口有没有问题"), true, "开放式动词");
+  assert.equal(looksOpenEnded("调研一下这个功能该怎么开发"), true, "调研");
+  assert.equal(looksOpenEnded("这个函数有 bug，can you help fix it?"), true, "问句");
+  assert.equal(looksOpenEnded("make the dashboard faster"), true, "短祈使式无锚定（v0.3.2 实测漏网形态）");
+  assert.equal(looksOpenEnded("删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏"), false, "已明确指令");
+  assert.equal(looksOpenEnded("修复 render 函数第 42 行的空指针异常"), false, "含行号锚定的明确指令");
+});
+
+test("补全闸：种子输入的第一稿实质未变时，补全重跑并回填补全版", async () => {
+  const input = "帮我看看这个登录接口有没有问题";
+  const llm = scriptedLlm([
+    textChunks("帮我看看这个登录接口有没有问题？"),  // 第一稿：标点级微调（未变）
+    textChunks("请检查这个登录接口是否存在问题；如有，指出是什么问题、出现在哪里。"), // 补全重跑
+    textChunks("OK"), // 审判
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.deepEqual(result, {
+    ok: true,
+    text: "请检查这个登录接口是否存在问题；如有，指出是什么问题、出现在哪里。",
+    tier: "full",
+    gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] },
+    detail: "",
+  });
+  assert.equal(llm.seen.length, 3, "重跑脱离平庸即停，不再二次重试");
+  assert.ok(llm.seen[1].system.includes("ELABORATION MODE"), "重跑必须带补全模式约束");
+  assert.ok(llm.seen[1].messages[0].content[0].text.includes("too thin"), "重跑必须说明失败原因并要求补全");
+  assert.equal(llm.seen[1].temperature, 0.4, "首次重试温度 0.4");
+});
+
+test("补全闸：两次重试温度递增，全部平庸时回填最后一次", async () => {
+  const input = "调研一下这个功能该怎么开发";
+  const llm = scriptedLlm([
+    textChunks("调研一下这个功能该怎么开发。"), // 第一稿：未变
+    textChunks("请调研一下这个功能该怎么开发。"), // 重试一：仍未变
+    textChunks("请调研一下这个功能该如何开发。"), // 重试二：仍未变
+    textChunks("OK"), // 审判
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true);
+  assert.equal(result.text, "请调研一下这个功能该如何开发。");
+  assert.equal(result.tier, "full");
+  assert.equal(llm.seen.length, 4, "两连重试 + 审判");
+  assert.equal(llm.seen[1].temperature, 0.4);
+  assert.equal(llm.seen[2].temperature, 0.7, "第二次重试升温扰动");
+});
+
+test("补全闸：已明确输入的第一稿未变时不触发重跑", async () => {
+  const input = "删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏";
+  const llm = scriptedLlm([
+    textChunks("删除 src/utils/legacy.js 中未被引用的 export，然后跑一遍测试确认没有破坏。"),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true);
+  assert.equal(result.tier, "full");
+  // 精确模式 + 近原样 → 连审判一起省掉（P1-5）：只花 1 次调用
+  assert.equal(llm.seen.length, 1, "精确输入近原样时跳过审判");
+  assert.ok(llm.seen[0].system.includes("PRECISE-INPUT MODE"));
+});
+
+test("looksSeedish：短种子/开放式命中，带锚定的明确指令不命中", () => {
+  assert.equal(looksSeedish("帮我做个图片压缩的功能"), true, "短种子");
+  assert.equal(looksSeedish("帮我看看这个登录接口有没有问题"), true, "开放式");
+  assert.equal(looksSeedish("这玩意儿咋老崩啊"), true, "短句无锚定");
+  assert.equal(
+    looksSeedish("删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏"),
+    false,
+    "带路径锚定的明确指令",
+  );
+  assert.equal(looksSeedish(""), false);
+});
+
+test("isContentFree：纯招呼/纯标点命中，极短但有内容的输入不误杀", () => {
+  // 实测病征：hi 空转 5.4s、你好 被拒 8.5s（v0.6.1 线上）
+  assert.equal(isContentFree("hi"), true);
+  assert.equal(isContentFree("HI"), true);
+  assert.equal(isContentFree("你好"), true);
+  assert.equal(isContentFree("谢谢"), true);
+  assert.equal(isContentFree("?"), true);
+  assert.equal(isContentFree("。。"), true);
+  assert.equal(isContentFree("   "), true);
+  assert.equal(isContentFree(""), true);
+  assert.equal(isContentFree("👍"), true);
+  // 阈值必须极低：登录（2 字）实测能补出高质量方案
+  assert.equal(isContentFree("登录"), false);
+  assert.equal(isContentFree("修一下"), false);
+  assert.equal(isContentFree("帮我看看这个接口"), false);
+});
+
+test("无内容输入直接短路：零模型调用，返回中性错误码", async () => {
+  const llm = scriptedLlm([textChunks("不该被调用")]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "hi" });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, ERROR_CODES.NOTHING_TO_OPTIMIZE);
+  assert.equal(result.error, "内容太短，没有可优化的信息");
+  assert.equal(llm.seen.length, 0, "内容下限不花任何模型调用");
+});
+
+test("精确模式近原样时跳过审判：只花一次调用", async () => {
+  const input = "把 src/utils/legacy.js 里的 formatDate 改成用 dayjs 实现";
+  const same = "把 src/utils/legacy.js 里的 formatDate 改成用 dayjs 实现";
+  const llm = scriptedLlm([textChunks(same), textChunks("OK")]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.deepEqual(result, { ok: true, text: same, tier: "full", gate: { verdict: "unverified", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+  assert.equal(llm.seen.length, 1, "近原样 → 不发起审判");
+});
+
+test("精确模式但改写动了实质：审判照常执行（短路不得放走真改动）", async () => {
+  const input = "把 src/utils/legacy.js 里的 formatDate 改成用 dayjs 实现";
+  const swapped = "把 src/utils/legacy.js 里的 formatDate 改成用 moment 实现";
+  const llm = scriptedLlm([
+    textChunks(swapped),
+    textChunks("CONTRADICTED: 把 dayjs 换成了 moment"),
+    textChunks("把 src/utils/legacy.js 里的 formatDate 改成用 dayjs 实现"),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(llm.seen.length, 4, "实质改动必须过审判，并由定向修复拉回");
+  assert.equal(result.ok, true);
+  assert.equal(result.tier, "repaired");
+  assert.equal(result.text, "把 src/utils/legacy.js 里的 formatDate 改成用 dayjs 实现");
+});
+
+test("isPreciseInstruction：点名目标+动作的完整指令命中，种子与问句不命中", () => {
+  // 命中：锚定事实（路径/扩展名/数字）+ 明确动作 + 不是问句
+  assert.equal(
+    isPreciseInstruction("删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏"),
+    true,
+    "v0.6.0 线上实测的过度发散病征输入",
+  );
+  assert.equal(isPreciseInstruction("把 src/utils/legacy.js 里的 formatDate 改成用 dayjs 实现"), true);
+  assert.equal(isPreciseInstruction("修复 render 函数第 42 行的空指针异常"), true);
+  // 不命中：种子/普通请求（无锚定）
+  assert.equal(isPreciseInstruction("帮我做个导出报表的功能"), false);
+  assert.equal(isPreciseInstruction("给设置页加个深色模式开关"), false);
+  // 不命中：开放意图（问句/调研/看看）
+  assert.equal(isPreciseInstruction("帮我看看这个登录接口有没有问题"), false);
+  assert.equal(isPreciseInstruction("调研一下 src/api 下这个模块该怎么开发"), false);
+  // 不命中：太短（信息量不足以称为完整指令）
+  assert.equal(isPreciseInstruction("改 src/a.js"), false);
+  assert.equal(isPreciseInstruction(""), false);
+});
+
+test("精确输入走精确模式：契约整段切换，输出接近原样", async () => {
+  const input = "删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏";
+  const polished = "删除 src/utils/legacy.js 里未被引用的 export，然后跑一遍测试确认没有破坏现有功能。";
+  const llm = scriptedLlm([textChunks(polished), textChunks("OK")]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+
+  assert.deepEqual(result, { ok: true, text: polished, tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+  assert.equal(llm.seen.length, 2, "精确输入不触发补全闸");
+  assert.ok(llm.seen[0].system.includes("PRECISE-INPUT MODE"), "system 必须切换到精确模式");
+  assert.ok(!llm.seen[0].system.includes("ELABORATE, NEVER DISTORT") === false, "基础契约仍在（模式是追加覆盖）");
+  const userPrompt = llm.seen[0].messages[0].content[0].text;
+  assert.ok(userPrompt.includes("already precise and complete"), "user 侧也要声明精确模式");
+  assert.ok(userPrompt.includes("Do not add procedures"), "user 侧必须点名禁止加步骤");
+});
+
+test("种子输入不得走精确模式（否则会压住该有的补全）", async () => {
+  const input = "帮我做个导出报表的功能";
+  const fat = "帮我做一个导出报表功能：可以选择导出的时间范围和统计维度，支持导出 CSV 和 Excel，数据量大时显示进度。";
+  const llm = scriptedLlm([textChunks(fat), textChunks("OK")]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+
+  assert.equal(result.ok, true);
+  assert.ok(!llm.seen[0].system.includes("PRECISE-INPUT MODE"), "种子必须走补全契约");
+  assert.ok(llm.seen[0].system.includes("ELABORATE, NEVER DISTORT"));
+});
+
+test("审判报 PADDED：精确输入被加戏时定向修复，绝不回填加戏稿", async () => {
+  const input = "删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏";
+  const padded = "删除 src/utils/legacy.js 里未被引用的 export：先在全仓库搜索每个 export 的引用，确认没有动态引用后再删；删完跑测试，失败就回退并说明原因。";
+  const fixed = "删除 src/utils/legacy.js 里未被引用的 export，然后跑一遍测试确认没有破坏现有功能。";
+  const llm = scriptedLlm([
+    textChunks(padded),
+    textChunks("PADDED: 加了搜索引用的步骤\nPADDED: 加了失败回退条款"),
+    textChunks(fixed),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+
+  assert.deepEqual(result, {
+    ok: true,
+    text: fixed,
+    tier: "repaired",
+    gate: {
+      verdict: "repaired",
+      repairs: 1,
+      rechecked: false,
+      violations: [
+        { kind: "padded", text: "加了搜索引用的步骤" },
+        { kind: "padded", text: "加了失败回退条款" },
+      ],
+    },
+    detail: "",
+  });
+  assert.equal(llm.seen.length, 3, "结构型越线（padded）修复后免二次审判：4 次调用降到 3 次");
+  assert.ok(llm.seen[2].system.includes("PRECISE-INPUT MODE"), "修复稿仍须遵守精确模式");
+  assert.ok(llm.seen[2].system.includes("REPAIR MODE"));
+  assert.ok(llm.seen[2].messages[0].content[0].text.includes("加了搜索引用的步骤"), "修复 prompt 必须点名加戏内容");
+});
+
+test("PADDED 判决归一为 padded 违规", () => {
+  assert.deepEqual(parseAuditVerdict("PADDED: 加了操作步骤"), {
+    status: "issues",
+    violations: [{ kind: "padded", text: "加了操作步骤" }],
+    thin: false, detail: "" });
+});
+
+test("精确模式与 PADDED 规则写进了模板", () => {
+  assert.ok(PRECISE_SUFFIX.includes("PRECISE-INPUT MODE"));
+  assert.ok(PRECISE_SUFFIX.includes("adding less is the correct answer"));
+  assert.ok(AUDIT_SYSTEM_TEMPLATE.includes("PADDED"));
+  assert.ok(AUDIT_SYSTEM_TEMPLATE.includes("For an ALREADY-PRECISE original they are PADDED"));
+});
+
+test("症状报告蕴含修复请求：改写侧与审判侧必须同步声明（实测漏掉导致红三角误拒）", () => {
+  // 用户输入"按钮就是个禁止符号，啥都没有"——描述坏掉的现象蕴含"查清并修好"。
+  // 缺这条时审判把"请排查原因"判成失真，功能表现为红三角 + 原文不动（真实故障）。
+  assert.ok(SYSTEM_TEMPLATE.includes("A SYMPTOM REPORT is a request"), "改写侧缺少症状蕴含");
+  assert.ok(AUDIT_SYSTEM_TEMPLATE.includes("A SYMPTOM REPORT is a request"), "审判侧缺少症状蕴含（不同步会继续误拒）");
+  assert.ok(USER_TEMPLATE.includes("a symptom report"), "user prompt 缺少症状蕴含示例");
+  // 展开必须有界：不能从症状跳到交付物清单
+  assert.ok(AUDIT_SYSTEM_TEMPLATE.includes("root-cause reports, option lists, and acceptance criteria are not"));
+});
+
+test("parseAuditVerdict 归一 OK / 四类失真 / THIN / 无法解析", () => {
+  const ok = { status: "ok", violations: [], thin: false, detail: "" };
+  assert.deepEqual(parseAuditVerdict("OK"), ok);
+  assert.deepEqual(parseAuditVerdict("OK."), ok);
+  assert.deepEqual(parseAuditVerdict("ok\n"), ok);
+  assert.deepEqual(parseAuditVerdict("DISTORTED: 把调研改成了实现"), {
+    status: "issues",
+    violations: [{ kind: "distorted", text: "把调研改成了实现" }],
+    thin: false, detail: "" });
+  assert.deepEqual(parseAuditVerdict("SCOPE_ADDED: 对比表格\nTONE_SHIFTED: 变成规格书"), {
+    status: "issues",
+    violations: [
+      { kind: "scope_added", text: "对比表格" },
+      { kind: "tone_shifted", text: "变成规格书" },
+    ],
+    thin: false, detail: "" });
+  // 历史别名 ADDED 仍归一为 scope_added（旧样本日志里可能出现）
+  assert.deepEqual(parseAuditVerdict("ADDED: 修复建议"), {
+    status: "issues",
+    violations: [{ kind: "scope_added", text: "修复建议" }],
+    thin: false, detail: "" });
+  // THIN 是"失职"不是"失真"：不带 violations，单独标记
+  assert.deepEqual(parseAuditVerdict("THIN: 只改了措辞"), { status: "ok", violations: [], thin: true, detail: "" });
+  assert.deepEqual(parseAuditVerdict("THIN: 只改了措辞\nDISTORTED: 换了目标"), {
+    status: "issues",
+    violations: [{ kind: "distorted", text: "换了目标" }],
+    thin: true, detail: "" });
+  // KIND 行不带说明时仍算抓到把柄（宁可多修一次，不可漏放）
+  assert.deepEqual(parseAuditVerdict("DISTORTED:"), {
+    status: "issues",
+    violations: [{ kind: "distorted", text: "改变了原始目标" }],
+    thin: false, detail: "" });
+  // 夹杂的自然语言行被忽略，协议行仍生效
+  assert.deepEqual(parseAuditVerdict("我检查了一下\nSCOPE_ADDED: 实施计划"), {
+    status: "issues",
+    violations: [{ kind: "scope_added", text: "实施计划" }],
+    thin: false, detail: "" });
+  // 审判输出被围栏/引号包裹时要先清洗
+  assert.deepEqual(parseAuditVerdict('```\n"OK"\n```'), ok);
+  // 空 / 越界输出 → unparsable，调用方 fail-open
+  const unparsable = { status: "unparsable", violations: [], thin: false, detail: "" };
+  assert.deepEqual(parseAuditVerdict(""), unparsable);
+  assert.deepEqual(parseAuditVerdict("我觉得改写得不错"), unparsable);
+});
+
+test("审判通过：正常回填，改写与审计调用均轻量", async () => {
+  const llm = scriptedLlm([
+    textChunks("请检查这个接口是否存在问题"),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({ llm, route: { ...ROUTE, reasoningEffort: "high" }, text: "帮我看看这个接口有没有问题" });
+  assert.deepEqual(result, { ok: true, text: "请检查这个接口是否存在问题", tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+
+  assert.equal(llm.seen.length, 2, "改写 + 审判恰好两次调用");
+  const [rewriteCall, auditCall] = llm.seen;
+  assert.ok(rewriteCall.system.includes("You expand prompts for a coding assistant"));
+  assert.equal(rewriteCall.reasoningEffort, undefined, "改写不透传 reasoningEffort（max 推理是方差源）");
+  assert.ok(auditCall.system.includes("strict auditor"));
+  assert.equal(auditCall.reasoningEffort, undefined, "审判不透传 reasoningEffort，保持轻量");
+  assert.equal(auditCall.temperature, 0);
+  assert.ok(auditCall.messages[0].content[0].text.includes("ORIGINAL:"));
+  assert.ok(auditCall.messages[0].content[0].text.includes("REWRITE:"));
+});
+
+test("审判报失真：定向修复保留已补细节，只摘越线处，二次审判通过", async () => {
+  const input = "帮我看看这个登录接口有没有问题";
+  const invented = "请审查这个登录接口的安全问题与逻辑缺陷，说明每处问题的影响范围和触发条件，并给出具体的修复建议。";
+  const llm = scriptedLlm([
+    textChunks(invented),            // 第一稿：曲解式展开（v0.1 病灶输出）
+    textChunks("DISTORTED: 把审查范围收窄成安全问题类别\nSCOPE_ADDED: 修复建议"), // 审判：抓到把柄
+    textChunks("请检查这个登录接口是否存在问题；如有，指出是什么问题、出现在哪里。"), // 修复稿
+    textChunks("OK"),                // 二次审判：通过
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.deepEqual(result, {
+    ok: true,
+    text: "请检查这个登录接口是否存在问题；如有，指出是什么问题、出现在哪里。",
+    tier: "repaired",
+    gate: {
+      verdict: "repaired",
+      repairs: 1,
+      rechecked: true,
+      violations: [
+        { kind: "distorted", text: "把审查范围收窄成安全问题类别" },
+        { kind: "scope_added", text: "修复建议" },
+      ],
+    },
+    detail: "",
+  });
+
+  assert.equal(llm.seen.length, 4);
+  const repairCall = llm.seen[2];
+  assert.ok(repairCall.system.includes("REPAIR MODE"), "重跑必须带定向修复约束");
+  assert.equal(result.gate.rechecked, true, "语义型越线（distorted）必须复核修复稿");
+  assert.equal(llm.seen.length, 4, "语义型越线保持 4 次调用");
+  assert.ok(repairCall.system.includes("KEEP the detail that was NOT flagged"), "修复不得退回原样（补全是产品本体）");
+  assert.ok(repairCall.messages[0].content[0].text.includes("安全问题类别"), "修复 prompt 必须点名具体问题");
+});
+
+test("二次审判仍失真：fidelity_rejected，绝不回填，且携带可解释 added 清单", async () => {
+  const input = "调研一下这个功能该怎么开发";
+  const invented1 = "请调研该功能的主流实现方案，输出对比表格，评估优缺点与风险，给出选型建议和实施计划。";
+  const invented2 = "请调研该功能并整理成对比表格，同时给出选型建议与实施排期。";
+  const llm = scriptedLlm([
+    textChunks(invented1),
+    textChunks("DISTORTED: 把调研改成了直接实施\nSCOPE_ADDED: 对比表格"),
+    textChunks(invented2),
+    textChunks("DISTORTED: 仍然把调研当成实施任务"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.code, ERROR_CODES.FIDELITY_REJECTED);
+  assert.equal(result.error, "优化会改变原意，已保留原文");
+  assert.equal(result.text, undefined, "失真拒绝时绝不能带 text 字段（不变量 I1）");
+  assert.deepEqual(result.added, ["仍然把调研当成实施任务"], "可解释拒绝：携带审判抓到的问题");
+  assert.equal(result.rejected, invented2, "被拒版本随结果回传，供用户显式查看（不变量 I1 不变）");
+  assert.equal(llm.seen.length, 4);
+});
+
+test("optimizePromptText 把会话上下文传给改写与审判调用", async () => {
+  const context = [
+    { role: "user", text: "登录接口有时候 500" },
+    { role: "assistant", text: "看起来是 token 校验的边界情况" },
+  ];
+  const llm = scriptedLlm([
+    textChunks("请修复登录接口的 token 校验问题"),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({
+    llm,
+    route: ROUTE,
+    text: "帮我修一下这个",
+    context,
+  });
+  assert.equal(result.ok, true);
+  // 改写与审判的 user prompt 都携带 CONTEXT 段（审判需要知情指代来源）
+  assert.ok(llm.seen[0].messages[0].content[0].text.includes("[user] 登录接口有时候 500"));
+  assert.ok(llm.seen[1].messages[0].content[0].text.includes("[assistant] 看起来是 token 校验的边界情况"));
+});
+
+test("宽容带已废除：审判报失真一律定向修复，长度比不再参与放行", async () => {
+  // 旧的 2.5× 宽容带会把"开放式 + 轻微新增"直接放行；补全契约下长度比不再指示
+  // 越线（种子长成一段细节是正常的），真伪只由审判的语义标尺判定。
+  const open = "帮我看看这个接口有没有问题";
+  const distorted = "请审查这个接口的安全问题，并输出对比表格。";
+  const llm = scriptedLlm([
+    textChunks(distorted),
+    textChunks("SCOPE_ADDED: 安全问题\nSCOPE_ADDED: 对比表格"),
+    textChunks("请检查这个接口是否存在问题；如有，指出是什么问题、出现在哪里。"),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: open });
+  assert.equal(result.ok, true);
+  assert.equal(result.tier, "repaired");
+  assert.equal(llm.seen.length, 3, "结构型越线走修复后免复核（4 → 3），但绝不回填原始失真稿");
+});
+
+test("审判报 THIN：种子输入补全一次并重新审判，补全稿通过即回填", async () => {
+  const input = "帮我做个图片压缩的功能";
+  const thin = "请帮我实现图片压缩，把图片压小一点。";
+  const fat = "帮我做一个图片压缩功能：上传图片后按目标尺寸或质量压缩，压缩前显示原图大小，压缩后显示压缩比，支持单张和批量，结果可下载，覆盖 jpg/png/webp，压缩失败时说明原因。";
+  const llm = scriptedLlm([
+    textChunks(thin),
+    textChunks("THIN: 只改了措辞，没有补出实现细节"),
+    textChunks(fat),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.deepEqual(result, { ok: true, text: fat, tier: "elaborated", gate: { verdict: "ok", repairs: 0, rechecked: true, violations: [] }, detail: "" });
+  assert.equal(llm.seen.length, 4);
+  assert.equal(llm.seen[2].temperature, 0.5, "补全重试带温度扰动（零温度重跑只会再薄一次）");
+  assert.ok(llm.seen[2].system.includes("ELABORATION MODE"));
+});
+
+test("THIN 补全后引入失真：回退薄但忠实的第一稿，绝不回填失真稿", async () => {
+  const input = "帮我做个图片压缩的功能";
+  const thin = "请帮我实现图片压缩，把图片压小一点。";
+  const distorted = "请实现一个基于 WebAssembly 的高性能图片压缩服务，包含断点续传、CDN 分发与压缩率报表。";
+  const llm = scriptedLlm([
+    textChunks(thin),
+    textChunks("THIN: 没有补出细节"),
+    textChunks(distorted),
+    textChunks("SCOPE_ADDED: CDN 分发\nSCOPE_ADDED: 压缩率报表"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.deepEqual(result, { ok: true, text: thin, tier: "thin", gate: { verdict: "thin", repairs: 0, rechecked: false, violations: [] }, detail: "" }, "宁可薄而忠实，不可厚而曲解");
+  assert.equal(llm.seen.length, 4);
+});
+
+test("审判报 THIN 但输入已明确：不补全（误报不得把明确指令堆胖）", async () => {
+  const input = "删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏";
+  // 故意写长，避开"精确 + 近原样 → 跳过审判"的短路，确保审判真的会执行
+  const rewrite = "删除 src/utils/legacy.js 中未被任何地方引用的导出，然后运行完整测试套件，确认现有功能没有被破坏。";
+  const llm = scriptedLlm([
+    textChunks(rewrite),
+    textChunks("THIN: 没有补充细节"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.deepEqual(result, { ok: true, text: rewrite, tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+  assert.equal(llm.seen.length, 2, "已明确输入不因 THIN 误报而重跑");
+});
+
+test("审判调用失败：fail-open 接受改写（闸门是纵深防御而非唯一机制）", async () => {
+  const llm = scriptedLlm([
+    textChunks("请检查这个接口是否存在问题"),
+    [{ type: "finish", reason: { kind: "error", failure: { code: "boom", message: "audit down" } } }],
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "帮我看看这个接口有没有问题" });
+  assert.deepEqual(result, { ok: true, text: "请检查这个接口是否存在问题", tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+});
+
+test("审判输出无法解析：fail-open 接受改写", async () => {
+  const llm = scriptedLlm([
+    textChunks("请检查这个接口是否存在问题"),
+    textChunks("这段改写保持了一致性，整体质量不错"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "帮我看看这个接口有没有问题" });
+  assert.deepEqual(result, { ok: true, text: "请检查这个接口是否存在问题", tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+});
+
+test("审判误报失真：定向修复稿被采纳，绝不因为一次误报就拒绝", async () => {
+  // 短输入 + 高膨胀比但改写其实没曲解 → 审判误报也应走修复；修复稿只要过审就回填，
+  // 用户的等待不能白费（旧流程在这里会退化成保守重跑甚至拒绝）。
+  const input = "看看代码";
+  const expanded = "请查看这段代码，检查其中是否存在任何问题。";
+  const llm = scriptedLlm([
+    textChunks(expanded),
+    textChunks("DISTORTED: 加了检查问题的要求"),
+    textChunks("请查看这段代码，检查其中是否存在任何问题。"),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true);
+  assert.equal(result.text, expanded);
+  assert.equal(result.tier, "repaired");
+  assert.equal(llm.seen.length, 4);
+});
+
+// --------------------------------------------------------------------------
+// 构建产物一致性
+
+// --------------------------------------------------------------------------
+// 构建产物：bundle 形态的清单、Host 半区路由、浏览器半区模块
+// --------------------------------------------------------------------------
+
+/** 读取 package.json。 */
+async function readPackage() {
+  return JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+}
+
+/** 假装成一个 webServer 服务，收集注册的路由。 */
+function makeWebServer() {
+  const routes = [];
+  return {
+    routes,
+    register(route) {
+      routes.push(route);
+      return () => {};
+    },
+  };
+}
+
+/** 造一个可读的假请求。 */
+function makeRequest(options = {}) {
+  const method = options.method ?? "POST";
+  const host = options.host ?? "127.0.0.1:3080";
+  const remoteAddress = options.remoteAddress ?? "127.0.0.1";
+  const body = options.body ?? "";
+  const req = Readable.from(body === "" ? [] : [Buffer.from(body, "utf8")]);
+  req.method = method;
+  req.headers = { host };
+  req.socket = { remoteAddress };
+  req.destroy = () => {};
+  return req;
+}
+
+/** 造一个记录响应的假 res。 */
+function makeResponse() {
+  return {
+    statusCode: null,
+    headers: null,
+    body: "",
+    writeHead(status, headers) {
+      this.statusCode = status;
+      this.headers = headers;
+    },
+    end(chunk) {
+      this.body = chunk ?? "";
+    },
+  };
+}
+
+/** 造一个带 llm 与默认模型的假 ctx。 */
+function makeHostContext(webServer, options = {}) {
+  const responses = options.responses ?? [
+    [
+      { type: "text-delta", index: 0, text: '```\nEnhanced prompt: "改写结果"\n```' },
+      { type: "finish", reason: { kind: "stop" } },
+    ],
+    textChunks("OK"),
+  ];
+  const llm = options.llm === undefined ? scriptedLlm(responses) : options.llm;
+  const sessionQuery =
+    options.sessionQuery === undefined
+      ? undefined
+      : options.sessionQuery;
+  return {
+    webServer,
+    // Cordis fiber 生命周期：effect 的返回值即 disposer（路由注册必须挂靠，
+    // 否则 fiber 销毁后路由残留，热升级撞 duplicate route——实测修过的 bug）。
+    effect(fn) {
+      return fn();
+    },
+    get(name) {
+      if (name === "llm") return llm;
+      if (name === "sessionQuery") return sessionQuery;
+      if (name === "agentDefaultModel") {
+        return options.model === undefined ? { currentSelection: () => ({ provider: "p", model: "m" }) } : options.model;
+      }
+      return undefined;
+    },
+  };
+}
+
+test("package.json 是合法的 bundle 清单，且每个入口都真的存在", async () => {
+  const pkg = await readPackage();
+  assert.equal(pkg.dsh.bundle.patch, "./cordis.patch.yml");
+  assert.equal(pkg.dsh.client.platform, "web");
+  assert.equal(pkg.exports["./client"], "./lib/client.js");
+
+  // 入口文件必须真实存在，否则 npm pack 出来的包在用户侧装载即失败
+  for (const rel of [pkg.main, pkg.exports["./client"], pkg.dsh.bundle.patch]) {
+    await readFile(join(root, rel), "utf8");
+  }
+
+  // files 白名单必须覆盖 lib 与 patch：漏掉任何一个都会让已发布的包缺文件
+  assert.ok(pkg.files.includes("lib"));
+  assert.ok(pkg.files.includes("cordis.patch.yml"));
+});
+
+test("cordis.patch.yml 以包名引用本包，而不是相对路径", async () => {
+  const pkg = await readPackage();
+  const patch = await readFile(join(root, "cordis.patch.yml"), "utf8");
+  // 行必须按包名引用，Node 的模块解析才能找到已安装的代码
+  assert.ok(patch.includes(`name: ${pkg.name}`));
+  assert.ok(patch.includes("id: prompt-seed"));
+  assert.ok(patch.includes("- insert:"));
+});
+
+test("lib/index.js 导出标准 Cordis 插件形状", async () => {
+  const host = await import("../lib/index.js");
+  assert.equal(host.name, "prompt-seed");
+  assert.deepEqual(host.inject, ["webServer"]);
+  assert.equal(typeof host.apply, "function");
+  assert.equal(host.DEFAULT_ROUTE, "/api/prompt-seed/optimize");
+});
+
+test("Host 路由：回环放行、非法来源拒绝、方法与非 JSON 体各自归一", async () => {
+  const host = await import("../lib/index.js");
+  const webServer = makeWebServer();
+  host.apply(makeHostContext(webServer), { samples: false });
+
+  assert.equal(webServer.routes.length, 1);
+  const route = webServer.routes[0];
+  assert.equal(route.kind, "exact");
+  assert.equal(route.path, host.DEFAULT_ROUTE);
+
+  // 正常路径：清洗后返回 ok
+  const ok = makeResponse();
+  await route.handler(makeRequest({ body: JSON.stringify({ text: "解释代码" }) }), ok);
+  assert.equal(ok.statusCode, 200);
+  assert.deepEqual(JSON.parse(ok.body), { ok: true, text: "改写结果", tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+
+  // 空输入仍然 200，但带业务错误码
+  const empty = makeResponse();
+  await route.handler(makeRequest({ body: JSON.stringify({ text: "   " }) }), empty);
+  assert.equal(empty.statusCode, 200);
+  assert.equal(JSON.parse(empty.body).code, "empty_input");
+
+  const wrongMethod = makeResponse();
+  await route.handler(makeRequest({ method: "GET" }), wrongMethod);
+  assert.equal(wrongMethod.statusCode, 405);
+
+  const badJson = makeResponse();
+  await route.handler(makeRequest({ body: "{not json" }), badJson);
+  assert.equal(badJson.statusCode, 400);
+
+  // 超长请求体必须被拒绝，而不是无限缓冲
+  const tooLarge = makeResponse();
+  await route.handler(makeRequest({ body: JSON.stringify({ text: "x".repeat(70000) }) }), tooLarge);
+  assert.equal(tooLarge.statusCode, 400);
+});
+
+test("回环防护同时校验 peer 地址与 Host 头", async () => {
+  const host = await import("../lib/index.js");
+  const webServer = makeWebServer();
+  host.apply(makeHostContext(webServer), { samples: false });
+  const route = webServer.routes[0];
+  const payload = JSON.stringify({ text: "帮我看看这段代码" });
+
+  // 远端 peer：直接 403
+  const remotePeer = makeResponse();
+  await route.handler(makeRequest({ remoteAddress: "10.0.0.7", body: payload }), remotePeer);
+  assert.equal(remotePeer.statusCode, 403);
+  assert.equal(JSON.parse(remotePeer.body).code, "forbidden");
+
+  // peer 合法但 Host 头撒谎（DNS rebinding）：同样 403
+  const reboundHost = makeResponse();
+  await route.handler(makeRequest({ host: "evil.example.com", body: payload }), reboundHost);
+  assert.equal(reboundHost.statusCode, 403);
+
+  // ::ffff:127.0.0.1 与 localhost 都要放行
+  for (const options of [
+    { remoteAddress: "::ffff:127.0.0.1", host: "localhost:3080" },
+    { remoteAddress: "::1", host: "[::1]:3080" },
+  ]) {
+    const res = makeResponse();
+    await route.handler(makeRequest({ ...options, body: payload }), res);
+    assert.equal(res.statusCode, 200, JSON.stringify(options));
+  }
+});
+
+test("Host 路由在 llm 或默认模型缺席时返回结构化错误码", async () => {
+  const host = await import("../lib/index.js");
+
+  const noLlm = makeWebServer();
+  host.apply(makeHostContext(noLlm, { llm: null }), { samples: false });
+  const first = makeResponse();
+  await noLlm.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码" }) }), first);
+  assert.equal(JSON.parse(first.body).code, "llm_unavailable");
+
+  const noModel = makeWebServer();
+  host.apply(makeHostContext(noModel, { model: null }), { samples: false });
+  const second = makeResponse();
+  await noModel.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码" }) }), second);
+  assert.equal(JSON.parse(second.body).code, "model_unavailable");
+});
+
+test("Host 路由支持自定义 path，且忽略不以 / 开头的非法值", async () => {
+  const host = await import("../lib/index.js");
+
+  const custom = makeWebServer();
+  host.apply(makeHostContext(custom), { route: "/api/custom/optimize", samples: false });
+  assert.equal(custom.routes[0].path, "/api/custom/optimize");
+
+  const invalid = makeWebServer();
+  host.apply(makeHostContext(invalid), { route: "no-leading-slash", samples: false });
+  assert.equal(invalid.routes[0].path, host.DEFAULT_ROUTE);
+});
+
+test("行 config 覆盖模型路由：provider+model 成对生效", async () => {
+  const host = await import("../lib/index.js");
+
+  const overridden = makeWebServer();
+  const ctx = makeHostContext(overridden);
+  host.apply(ctx, { provider: "zai", model: "glm-flash", samples: false });
+  const res = makeResponse();
+  await overridden.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码" }) }), res);
+  assert.equal(res.statusCode, 200);
+  const llm = ctx.get("llm");
+  assert.equal(llm.seen[0].provider, "zai", "provider 覆盖生效");
+  assert.equal(llm.seen[0].model, "glm-flash", "model 覆盖生效");
+
+  // 只给 provider 不给 model：忽略覆盖，回落默认模型
+  const half = makeWebServer();
+  const ctxHalf = makeHostContext(half);
+  host.apply(ctxHalf, { provider: "zai", samples: false });
+  const resHalf = makeResponse();
+  await half.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码" }) }), resHalf);
+  assert.equal(ctxHalf.get("llm").seen[0].provider, "p", "残缺覆盖回落 agentDefaultModel");
+});
+
+test("请求带 sessionId 时读取会话上下文并注入改写调用", async () => {
+  const host = await import("../lib/index.js");
+
+  const webServer = makeWebServer();
+  const readCalls = [];
+  const ctx = makeHostContext(webServer, {
+    sessionQuery: {
+      readSurface(sessionId) {
+        readCalls.push(sessionId);
+        return Promise.resolve({
+          events: [
+            { type: "user/message", data: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "登录接口有时候 500" }] } },
+          ],
+        });
+      },
+    },
+  });
+  host.apply(ctx, { samples: false });
+  const res = makeResponse();
+  await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我修一下这个", sessionId: "s-1" }) }), res);
+
+  assert.deepEqual(readCalls, ["s-1"]);
+  const userPrompt = ctx.get("llm").seen[0].messages[0].content[0].text;
+  assert.ok(userPrompt.includes("[user] 登录接口有时候 500"), "上下文进入了改写 prompt");
+
+  // 不带 sessionId：不读会话
+  const res2 = makeResponse();
+  await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码" }) }), res2);
+  assert.equal(readCalls.length, 1, "无 sessionId 不触发 readSurface");
+
+  // sessionQuery 缺席：静默降级，优化照常
+  const bare = makeWebServer();
+  host.apply(makeHostContext(bare), { samples: false });
+  const res3 = makeResponse();
+  await bare.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码", sessionId: "s-2" }) }), res3);
+  assert.equal(JSON.parse(res3.body).ok, true);
+
+  // context: false 配置：即使有 sessionId 也不读
+  const off = makeWebServer();
+  const offCalls = [];
+  host.apply(makeHostContext(off, {
+    sessionQuery: { readSurface(id) { offCalls.push(id); return Promise.resolve({ events: [] }); } },
+  }), { context: false, samples: false });
+  const res4 = makeResponse();
+  await off.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码", sessionId: "s-3" }) }), res4);
+  assert.deepEqual(offCalls, [], "context:false 完全关闭会话读取");
+});
+
+test("readSurface 抛错时静默降级为无上下文", async () => {
+  const host = await import("../lib/index.js");
+  const webServer = makeWebServer();
+  host.apply(makeHostContext(webServer, {
+    sessionQuery: {
+      readSurface() { return Promise.reject(new Error("corrupt log")); },
+    },
+  }), { samples: false });
+  const res = makeResponse();
+  await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码", sessionId: "s-x" }) }), res);
+  assert.equal(JSON.parse(res.body).ok, true, "上下文失败不阻塞优化");
+});
+
+test("preservesAnchors：标识符/路径/数字一个都不能少", () => {
+  const input = "把 src/utils/legacy.js 里的 formatDate 改成用 dayjs 实现";
+  assert.equal(preservesAnchors(input, "把 src/utils/legacy.js 里的 formatDate 改成用 dayjs 实现。"), true);
+  assert.equal(preservesAnchors(input, "请把 src/utils/legacy.js 中的 formatDate 改用 dayjs。"), true);
+  // 内容词替换必须被发现（实测编辑距离容差放走过这一例）
+  assert.equal(preservesAnchors(input, "把 src/utils/legacy.js 里的 formatDate 改成用 moment 实现"), false);
+  assert.equal(preservesAnchors(input, "把 src/utils/legacy.js 里的 formatDate 改掉"), false, "丢掉 dayjs");
+  // 数字同样算锚定
+  assert.equal(preservesAnchors("修复 render 函数第 42 行的空指针", "修复 render 函数第 43 行的空指针"), false);
+  assert.equal(preservesAnchors("修复 render 函数第 42 行的空指针", "修复 render 函数第 42 行的空指针异常。"), true);
+});
+
+test("反馈通道：同一条路由收隐式信号，落盘且不花模型调用", async () => {
+  const host = await import("../lib/index.js");
+  const dir = await mkdtemp(join(tmpdir(), "po-feedback-"));
+  const file = join(dir, "samples.jsonl");
+  try {
+    const webServer = makeWebServer();
+    const ctx = makeHostContext(webServer, { responses: [textChunks("不该被调用")] });
+    host.apply(ctx, { samples: file });
+
+    const res = makeResponse();
+    await webServer.routes[0].handler(
+      makeRequest({ body: JSON.stringify({ feedback: { kind: "reverted", tier: "full", charsDelta: 120, elapsedMs: 4200 } }) }),
+      res,
+    );
+    assert.equal(res.statusCode, 200);
+    assert.deepEqual(JSON.parse(res.body), { ok: true });
+    assert.equal(ctx.get("llm").seen.length, 0, "反馈不触发任何模型调用");
+
+    const record = JSON.parse((await readFile(file, "utf8")).trim().split("\n")[0]);
+    assert.equal(record.event, "feedback");
+    assert.equal(record.kind, "reverted");
+    assert.equal(record.tier, "full");
+    assert.equal(record.charsDelta, 120);
+    assert.equal(record.elapsedMs, 4200);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("每次优化都落盘：不只记拒绝，带 tier/mode/长度/耗时", async () => {
+  const host = await import("../lib/index.js");
+  const dir = await mkdtemp(join(tmpdir(), "po-events-"));
+  const file = join(dir, "samples.jsonl");
+  try {
+    const webServer = makeWebServer();
+    host.apply(
+      makeHostContext(webServer, {
+        responses: [textChunks("删除 src/utils/legacy.js 中未被引用的 export，然后跑测试确认没有破坏。"), textChunks("OK")],
+      }),
+      { samples: file },
+    );
+    const res = makeResponse();
+    await webServer.routes[0].handler(
+      makeRequest({ body: JSON.stringify({ text: "删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏" }) }),
+      res,
+    );
+    assert.equal(JSON.parse(res.body).ok, true);
+
+    const record = JSON.parse((await readFile(file, "utf8")).trim().split("\n")[0]);
+    assert.equal(record.event, "optimize");
+    assert.equal(record.code, "ok");
+    assert.equal(record.tier, "full");
+    assert.equal(record.mode, "precise", "该输入命中精确模式");
+    assert.ok(record.inputChars > 0 && record.outputChars > 0);
+    assert.ok(typeof record.ms === "number");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("引用标记守恒规则写进了模板", () => {
+  assert.ok(SYSTEM_SUFFIX.includes("@src/a.js"));
+  assert.ok(SYSTEM_SUFFIX.includes("Never drop, translate, or reword one"));
+});
+
+test("路由在保真拒绝时把样本落盘（误拒的唯一证据来源）", async () => {
+  const host = await import("../lib/index.js");
+  const dir = await mkdtemp(join(tmpdir(), "po-route-samples-"));
+  const file = join(dir, "samples.jsonl");
+  try {
+    const webServer = makeWebServer();
+    // 审判两次都判 ADDED → 走到 fidelity_rejected
+    host.apply(
+      makeHostContext(webServer, {
+        responses: [
+          textChunks("请审查这个接口的安全问题，并给出修复建议。"),
+          textChunks("DISTORTED: 把检查变成了安全审查"),
+          textChunks("请审查这个接口的安全问题，并给出修复建议。"),
+          textChunks("DISTORTED: 仍然把检查变成了安全审查"),
+        ],
+      }),
+      { samples: file },
+    );
+    const res = makeResponse();
+    await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这个接口有没有问题" }) }), res);
+    const body = JSON.parse(res.body);
+    assert.equal(body.code, "fidelity_rejected");
+
+    const lines = (await readFile(file, "utf8")).trim().split("\n");
+    assert.equal(lines.length, 1, "每次拒绝写一条");
+    const record = JSON.parse(lines[0]);
+    assert.equal(record.code, "fidelity_rejected");
+    assert.equal(record.input, "帮我看看这个接口有没有问题");
+    assert.ok(Array.isArray(record.added) && record.added.length > 0, "必须带审判抓到的条目");
+
+    // samples:false 时不写
+    const dir2 = await mkdtemp(join(tmpdir(), "po-route-samples-off-"));
+    const file2 = join(dir2, "samples.jsonl");
+    const webServer2 = makeWebServer();
+    host.apply(makeHostContext(webServer2, {
+      responses: [
+        textChunks("请审查这个接口的安全问题，并给出修复建议。"),
+        textChunks("DISTORTED: 把检查变成了安全审查"),
+        textChunks("请审查这个接口的安全问题，并给出修复建议。"),
+        textChunks("DISTORTED: 仍然把检查变成了安全审查"),
+      ],
+    }), { samples: false });
+    const res2 = makeResponse();
+    await webServer2.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这个接口有没有问题" }) }), res2);
+    assert.equal(JSON.parse(res2.body).code, "fidelity_rejected");
+    await assert.rejects(readFile(file2, "utf8"), "samples:false 时不得创建样本文件");
+    await rm(dir2, { recursive: true, force: true });
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("客户端半区带隐式反馈与引用守恒逻辑", async () => {
+  const bundle = await readFile(join(root, "lib", "client.js"), "utf8");
+  // 三档隐式信号 + applied（客户端存活性证据）
+  for (const kind of ["applied", "reverted", "retried", "submitted"]) {
+    assert.ok(bundle.includes(`'${kind}'`), `缺少反馈信号 ${kind}`);
+  }
+  assert.ok(bundle.includes("FEEDBACK_WINDOW_MS"), "缺少反馈窗口常量");
+  assert.ok(bundle.includes("丢失引用标记"), "缺少引用守恒校验");
+  assert.ok(bundle.includes("nothing_to_optimize"), "内容下限必须走中性提示而不是红色故障");
+});
+
+test("lib/client.js 是合法的 __ModuleLoader__ 模块，id 与包名一致", async () => {
+  const pkg = await readPackage();
+  const source = await readFile(join(root, "lib/client.js"), "utf8");
+
+  let entry;
+  // eslint-disable-next-line no-new-func
+  new Function("window", source)({ __ModuleLoader__: { load: (value) => { entry = value; } } });
+
+  assert.ok(entry, "bundle 必须通过 window.__ModuleLoader__.load 注册");
+  assert.equal(entry.id, pkg.name, "模块 id 必须是包名，否则 client-modules 的图对不上");
+  assert.equal(typeof entry.factory, "function");
+  // factory 只注册不执行：副作用必须留在 materialize 之后
+  assert.ok(!/document\./.test(source.split("factory")[0]));
+});
+
+test("lib/client.js materialize 后导出可用的客户端插件，并注册按钮与样式", async () => {
+  const source = await readFile(join(root, "lib/client.js"), "utf8");
+  let entry;
+  // eslint-disable-next-line no-new-func
+  new Function("window", source)({ __ModuleLoader__: { load: (value) => { entry = value; } } });
+
+  const fakeReact = { createElement: () => null, useState: (v) => [v, () => {}], useEffect: () => {}, useRef: () => ({}) };
+  const required = [];
+  const exported = entry.factory((name) => {
+    required.push(name);
+    return fakeReact;
+  });
+
+  assert.deepEqual(required, ["react"], "react 是 shell 提供的 seed 模块，不需要声明为 external");
+  assert.equal(exported.name, "prompt-seed");
+  assert.deepEqual(exported.inject, ["slots"]);
+  assert.equal(typeof exported.apply, "function");
+
+  const previousDocument = globalThis.document;
+  const styleNodes = [];
+  globalThis.document = {
+    createElement() {
+      return {
+        attrs: {},
+        textContent: "",
+        setAttribute(key, value) {
+          this.attrs[key] = value;
+        },
+        remove() {
+          this.removed = true;
+        },
+      };
+    },
+    head: {
+      appendChild(node) {
+        styleNodes.push(node);
+      },
+    },
+  };
+
+  try {
+    const injections = [];
+    const registrations = [];
+    const effects = [];
+    const ctx = {
+      slots: {
+        inject(key, callback) {
+          injections.push(key);
+          callback();
+        },
+        register(options, render) {
+          registrations.push(options);
+          assert.equal(typeof render, "function");
+          return () => {};
+        },
+      },
+      effect(callback, label) {
+        effects.push(label);
+        return callback();
+      },
+    };
+
+    exported.apply(ctx);
+
+    assert.deepEqual(injections, ["conversation.input.right"]);
+    assert.deepEqual(registrations, [{ name: "conversation.input.right", id: "prompt-seed", order: -10 }]);
+    assert.deepEqual(effects, ["prompt-seed:styles"]);
+    assert.equal(styleNodes.length, 1);
+    assert.equal(styleNodes[0].attrs["data-dsh-plugin"], "prompt-seed");
+    assert.ok(styleNodes[0].textContent.includes(".dsh-seed-btn"));
+    assert.ok(styleNodes[0].textContent.includes("--dsw-alias-brand-primary"), "样式必须使用主题变量");
+    // 拒绝态必须是中性色（红三角让人以为"功能坏了"，实测教训）
+    assert.ok(styleNodes[0].textContent.includes('[data-mode="declined"]{color:var(--dsw-alias-label-secondary)'), "拒绝态必须中性");
+    assert.ok(styleNodes[0].textContent.includes('[data-mode="error"]{color:var(--dsw-alias-state-error-primary)'), "红色只留给真错误");
+  } finally {
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+});
+
+test("浏览器半区请求的路由与 Host 半区的默认路由一致", async () => {
+  const host = await import("../lib/index.js");
+  const client = await readFile(join(root, "lib/client.js"), "utf8");
+  // 两份产物分别编译，路由漂移会让按钮永远报错——这里锁死
+  assert.ok(client.includes(host.DEFAULT_ROUTE), `客户端必须请求 ${host.DEFAULT_ROUTE}`);
+});
+
+
+// ---------------------------------------------------------------------------
+// A–F 项新增能力
+// ---------------------------------------------------------------------------
+
+test("A 闸门凭证：审判的 DETAIL 行被解析成摘要，且不计入违规", () => {
+  assert.deepEqual(parseAuditVerdict("OK\nDETAIL: 边界情况、失败处理"), {
+    status: "ok",
+    violations: [],
+    thin: false,
+    detail: "边界情况、失败处理",
+  });
+  // 摘要与违规可以共存
+  const both = parseAuditVerdict("PADDED: 加了操作步骤\nDETAIL: 失败处理");
+  assert.equal(both.status, "issues");
+  assert.equal(both.detail, "失败处理");
+  assert.equal(both.violations.length, 1);
+  // "no change" 不当作摘要
+  assert.equal(parseAuditVerdict("OK\nDETAIL: no change").detail, "");
+  // 裸 OK 仍然必须被识别（曾因重写解析器丢失，测试锁死）
+  assert.equal(parseAuditVerdict("OK").status, "ok");
+  assert.equal(parseAuditVerdict("OK.").status, "ok");
+});
+
+test("A 闸门凭证：摘要随成功结果回传", async () => {
+  const llm = scriptedLlm([
+    textChunks("请检查这个登录接口是否存在问题，并说明出现在哪里。"),
+    textChunks("OK\nDETAIL: 出错位置与复现条件"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "帮我看看这个登录接口有没有问题" });
+  assert.equal(result.ok, true);
+  assert.equal(result.detail, "出错位置与复现条件");
+  assert.equal(result.gate.verdict, "ok");
+});
+
+test("C 结构型越线判定：删改类免复核，语义类必须复核", () => {
+  assert.equal(isStructuralOnly([{ kind: "padded" }]), true);
+  assert.equal(isStructuralOnly([{ kind: "scope_added" }, { kind: "tone_shifted" }]), true);
+  assert.equal(isStructuralOnly([{ kind: "distorted" }]), false);
+  assert.equal(isStructuralOnly([{ kind: "contradicted" }]), false);
+  // 混合时按最严处理：只要有一个语义型就必须复核
+  assert.equal(isStructuralOnly([{ kind: "padded" }, { kind: "distorted" }]), false);
+  assert.equal(isStructuralOnly([]), false);
+});
+
+test("C 结构型越线修复后免二次审判，凭证如实标注未复核", async () => {
+  const input = "帮我看看这个登录接口有没有问题";
+  const llm = scriptedLlm([
+    textChunks("请审查这个登录接口的安全问题，并给出修复建议与实施排期。"),
+    textChunks("SCOPE_ADDED: 实施排期"),
+    textChunks("请检查这个登录接口是否存在问题，并说明出现在哪里。"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(llm.seen.length, 3, "结构型越线：3 次调用（原来 4 次）");
+  assert.equal(result.ok, true);
+  assert.equal(result.tier, "repaired");
+  assert.equal(result.gate.rechecked, false, "免复核必须如实标注，不能伪装成复核过");
+  assert.deepEqual(result.gate.violations, [{ kind: "scope_added", text: "实施排期" }]);
+});
+
+test("D/E 深度档位：三档后缀各不相同，未知值按标准档", () => {
+  assert.ok(DEPTH_LIGHT_SUFFIX.includes("DEPTH - LIGHT"));
+  assert.ok(DEPTH_DEEP_SUFFIX.includes("DEPTH - DEEP"));
+  assert.ok(!DEPTH_LIGHT_SUFFIX.includes("DEPTH - DEEP"));
+  assert.equal(depthSuffix("deep"), DEPTH_DEEP_SUFFIX);
+  assert.equal(depthSuffix("light"), DEPTH_LIGHT_SUFFIX);
+  assert.equal(depthSuffix(undefined), depthSuffix("standard"));
+  assert.equal(depthSuffix("garbage"), depthSuffix("standard"));
+});
+
+test("D 深度档位随请求下发到 system prompt", async () => {
+  const llm = scriptedLlm([
+    textChunks("帮我做一个导出报表功能：支持选择时间范围与统计维度，导出 CSV 与 Excel。"),
+    textChunks("OK"),
+  ]);
+  await optimizePromptText({ llm, route: ROUTE, text: "帮我做个导出报表的功能", depth: "deep" });
+  assert.ok(llm.seen[0].system.includes("DEPTH - DEEP"));
+  assert.ok(!llm.seen[0].system.includes("DEPTH - LIGHT"));
+});
+
+test("F 模板覆盖层：覆盖后立即生效，清除后回落内置", () => {
+  const llm = scriptedLlm([textChunks("改写结果文本"), textChunks("OK")]);
+  setTemplateOverrides({ system: "CUSTOM SYSTEM CONTRACT" });
+  assert.ok(buildSystemPrompt().startsWith("CUSTOM SYSTEM CONTRACT"));
+  assert.ok(buildSystemPrompt().includes(SYSTEM_SUFFIX), "部署级追加约束必须保留");
+  setTemplateOverrides(null);
+  assert.ok(buildSystemPrompt().startsWith(SYSTEM_TEMPLATE));
+  assert.equal(buildSystemPrompt(), SYSTEM_TEMPLATE + SYSTEM_SUFFIX);
+  assert.equal(llm.seen.length, 0);
+});
+
+test("F 模板覆盖层可覆盖 user 模板且保留 {input} 占位", () => {
+  setTemplateOverrides({ user: "自定义前缀\n{input}" });
+  const rendered = renderUserPrompt("原始草稿", undefined);
+  assert.ok(rendered.includes("自定义前缀"));
+  assert.ok(rendered.includes("原始草稿"));
+  setTemplateOverrides(null);
+  assert.ok(renderUserPrompt("原始草稿", undefined).includes("原始草稿"));
+});
+
+test("E 按需上下文：短草稿与指代才需要会话，自足描述不需要", () => {
+  assert.equal(needsContext("帮我看看这个"), true, "短草稿必然依赖上文");
+  assert.equal(needsContext("把那个接口改一下"), true, "指代词命中");
+  assert.equal(needsContext("fix that bug in the parser"), true, "英文指代同样命中");
+  assert.equal(
+    needsContext("在 src/utils/format.js 里新增一个 formatBytes 函数，输入字节数返回可读字符串，并补单元测试"),
+    false,
+    "自足描述不该白读会话",
+  );
+  assert.equal(needsContext(""), false);
+});
+
+test("E 精确指令一律视为自足：不读会话（省一次 readSurface）", async () => {
+  const host = await import("../lib/index.js");
+  const webServer = makeWebServer();
+  const readCalls = [];
+  host.apply(
+    makeHostContext(webServer, {
+      sessionQuery: {
+        readSurface(id) { readCalls.push(id); return Promise.resolve({ events: [] }); },
+      },
+    }),
+    { samples: false },
+  );
+  const res = makeResponse();
+  await webServer.routes[0].handler(
+    makeRequest({ body: JSON.stringify({ text: "删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏", sessionId: "s-1" }) }),
+    res,
+  );
+  assert.deepEqual(readCalls, [], "精确指令指名道姓，不需要上文");
+});
+
+test("E 指代草稿仍然读会话（按需注入不能把有用的上下文一起砍掉）", async () => {
+  const host = await import("../lib/index.js");
+  const webServer = makeWebServer();
+  const readCalls = [];
+  host.apply(
+    makeHostContext(webServer, {
+      sessionQuery: {
+        readSurface(id) { readCalls.push(id); return Promise.resolve({ events: [] }); },
+      },
+    }),
+    { samples: false },
+  );
+  const res = makeResponse();
+  await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "把那个接口加上限流", sessionId: "s-2" }) }), res);
+  assert.deepEqual(readCalls, ["s-2"]);
+});
+
+test("F 模板覆盖：从 $DSH_HOME 读取，改完立刻生效（不必重启）", async () => {
+  const host = await import("../lib/index.js");
+  const dir = await mkdtemp(join(tmpdir(), "po-templates-"));
+  const previous = process.env.DSH_HOME;
+  process.env.DSH_HOME = dir;
+  try {
+    const prompts = join(dir, "prompt-seed", "prompts");
+    await mkdir(prompts, { recursive: true });
+    await writeFile(join(prompts, "system.md"), "OVERRIDDEN CONTRACT", "utf8");
+
+    const llm = scriptedLlm([
+      textChunks("请检查这段代码是否存在问题，并说明出现在哪里。"),
+      textChunks("OK"),
+    ]);
+    const webServer = makeWebServer();
+    host.apply(makeHostContext(webServer, { llm }), { samples: false });
+
+    const res = makeResponse();
+    await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码" }) }), res);
+    assert.equal(res.statusCode, 200);
+    assert.ok(llm.seen[0].system.startsWith("OVERRIDDEN CONTRACT"), "覆盖文件必须真的进入 system prompt");
+    assert.ok(llm.seen[0].system.includes("Never drop, translate, or reword one"), "部署级追加约束仍在");
+
+    // 改完立刻生效：不重启、不重新 apply
+    await writeFile(join(prompts, "system.md"), "SECOND CONTRACT", "utf8");
+    llm.seen.length = 0;
+    const res2 = makeResponse();
+    await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码" }) }), res2);
+    assert.ok(llm.seen[0].system.startsWith("SECOND CONTRACT"), "每次请求重读模板，改完下一次点击即生效");
+
+    // 删除覆盖文件 → 回落内置模板
+    await rm(join(prompts, "system.md"));
+    llm.seen.length = 0;
+    const res3 = makeResponse();
+    await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码" }) }), res3);
+    assert.ok(llm.seen[0].system.startsWith(SYSTEM_TEMPLATE.slice(0, 40)), "文件缺失即回落内置");
+    setTemplateOverrides(null);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("F 模板覆盖可用 templates:false 整体关闭", async () => {
+  const host = await import("../lib/index.js");
+  const dir = await mkdtemp(join(tmpdir(), "po-templates-off-"));
+  const previous = process.env.DSH_HOME;
+  process.env.DSH_HOME = dir;
+  try {
+    const prompts = join(dir, "prompt-seed", "prompts");
+    await mkdir(prompts, { recursive: true });
+    await writeFile(join(prompts, "system.md"), "SHOULD NOT APPLY", "utf8");
+    const llm = scriptedLlm([
+      textChunks("请检查这段代码是否存在问题，并说明出现在哪里。"),
+      textChunks("OK"),
+    ]);
+    const webServer = makeWebServer();
+    host.apply(makeHostContext(webServer, { llm }), { samples: false, templates: false });
+    const res = makeResponse();
+    await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码" }) }), res);
+    assert.ok(!llm.seen[0].system.includes("SHOULD NOT APPLY"));
+    setTemplateOverrides(null);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("F 被拒版本随结果回传，且绝不占用 text 字段（不变量 I1）", async () => {
+  const input = "调研一下这个功能该怎么开发";
+  const invented1 = "请调研该功能的主流实现方案，输出对比表格，评估优缺点与风险。";
+  const invented2 = "请调研该功能并整理成对比表格，同时给出选型建议。";
+  const llm = scriptedLlm([
+    textChunks(invented1),
+    textChunks("DISTORTED: 把调研改成了实施"),
+    textChunks(invented2),
+    textChunks("DISTORTED: 仍然把调研当成实施任务"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, false);
+  assert.equal(result.text, undefined, "拒绝时绝不能带 text（客户端可能误写回）");
+  assert.equal(result.rejected, invented2, "被拒版本走独立字段，只在用户显式查看时才用");
+});
+
+test("D 深度档位非法值安全降级为标准档（旧客户端兼容）", async () => {
+  const llm = scriptedLlm([
+    textChunks("帮我做一个导出报表功能：支持选择时间范围与统计维度，导出 CSV 与 Excel。"),
+    textChunks("OK"),
+  ]);
+  await optimizePromptText({ llm, route: ROUTE, text: "帮我做个导出报表的功能", depth: "ultra" });
+  assert.ok(llm.seen[0].system.includes("DEPTH - STANDARD"));
+});
+
+test("codeVersion 报的是本进程加载的代码版本，不是磁盘上的 package.json", async () => {
+  const host = await import("../lib/index.js");
+  const pkg = await readPackage();
+  // 模块加载时冻结：文件内容改变不影响已加载实例的报告值（这正是它的用途——
+  // 区分"装上了新版"和"跑的是新版"）。
+  const loaded = host.codeVersion();
+  assert.equal(loaded, pkg.version);
+
+  // 决定性回归：模块已加载后改写磁盘上的 package.json，报告值必须不变。
+  // 旧实现每次现读磁盘 → 装了新版但跑着旧代码时会报新版本号，把排查带进沟里。
+  const file = join(root, "package.json");
+  const original = await readFile(file, "utf8");
+  try {
+    await writeFile(file, original.replace(/"version": "[^"]+"/, '"version": "99.99.99"'), "utf8");
+    assert.equal(host.codeVersion(), loaded, "codeVersion 必须在模块加载时冻结，不得现读磁盘");
+    assert.notEqual(host.codeVersion(), "99.99.99");
+  } finally {
+    await writeFile(file, original, "utf8");
+  }
+  assert.equal(JSON.parse(await readFile(file, "utf8")).version, pkg.version, "package.json 必须复原");
+});
+
+test("客户端按钮真的渲染出正确形态（空草稿常驻、有内容微光、凭证标记）", async () => {
+  const source = await readFile(join(root, "lib", "client.js"), "utf8");
+  let entry;
+  // eslint-disable-next-line no-new-func
+  new Function("window", source)({ __ModuleLoader__: { load: (value) => { entry = value; } } });
+
+  // 极简 React 替身：只记录元素树，不做调和。
+  const React = {
+    createElement(type, props, children) {
+      // 函数组件必须真的被调用（槽位注册的 render 是包了一层的函数，不会自动执行）。
+      if (typeof type === "function") return type(props || {});
+      return { type, props: props || {}, children: children === undefined ? [] : [].concat(children) };
+    },
+    useState(initial) { return [typeof initial === "function" ? initial() : initial, () => {}]; },
+    useRef(value) { return { current: value }; },
+    useEffect() {},
+  };
+  const exported = entry.factory(() => React);
+
+  const registered = [];
+  const slots = {
+    inject(name, cb) { registered.push({ name, value: cb() }); },
+    register(meta, render) { return { meta, render }; },
+  };
+  exported.apply({ slots, effect() {} });
+  const render = registered[0].value.render;
+
+  const previousWindow = globalThis.window;
+  globalThis.window = { localStorage: { getItem: () => null, setItem() {} } };
+  try {
+    const makeProps = (draft) => ({
+      useInput(selector) { return selector({ draft, draftRev: 1, phase: "plain", occurrences: [] }); },
+      inputActions: { setDraft() {}, addAttachments() {}, removeAttachment() {}, pruneAttachments() {} },
+      t: (key) => key,
+    });
+
+    // 空草稿：仍然渲染（旧实现 return null 会闪进闪出），并标成空态
+    const empty = render(makeProps(""));
+    const emptyButton = empty.type === "button" ? empty : empty.children[0];
+    assert.equal(emptyButton.props["data-testid"], "prompt-seed-button");
+    assert.equal(emptyButton.props["data-empty"], "1", "空草稿必须常驻而不是整块消失");
+
+    // 有内容：微光开启、报出深度档位
+    const idle = render(makeProps("帮我做个导出报表的功能"));
+    assert.equal(idle.type, "button", "空闲态只有一个主按钮");
+    assert.equal(idle.props["data-empty"], "0");
+    assert.equal(idle.props["data-glow"], "1", "有内容且空闲时给呼吸微光");
+    assert.ok(String(idle.props.title).includes("深度："), "tooltip 必须报出当前深度档位");
+    assert.ok(String(idle.props.title).includes("右键切换"), "深度切换入口必须在 tooltip 里说明");
+  } finally {
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
+test("客户端半区包含 B/D/F 三项的界面与状态逻辑（防误删守卫）", async () => {
+  const bundle = await readFile(join(root, "lib", "client.js"), "utf8");
+  for (const marker of [
+    "dsh-opt-secondary",
+    "prompt-seed-regenerate",
+    "prompt-seed-previous",
+    "prompt-seed-view-rejected",
+    "HISTORY_MAX",
+    "resolveDepth",
+    "storedDepthMode",
+    "autoDepth",
+    "onContextMenu",
+    "dsh-opt-gate",
+  ]) {
+    assert.ok(bundle.includes(marker), `客户端半区缺少 ${marker}`);
+  }
+  // 请求必须真的下发深度档位，否则 D 项只是死代码
+  assert.ok(bundle.includes("depth:"), "请求体必须带 depth");
+  // 空草稿常驻而不是整块消失
+  assert.ok(!bundle.includes("!hasContent) return null"), "按钮不得在空草稿时整块消失");
+});
+
+
+// ---------------------------------------------------------------------------
+// 开源准备：能力探测 + 优雅自禁用
+// ---------------------------------------------------------------------------
+
+test("宿主缺 webServer 接缝时自禁用，绝不抛异常拖垮宿主启动", async () => {
+  const host = await import("../lib/index.js");
+  const logged = [];
+  const previousError = console.error;
+  console.error = (...args) => logged.push(args);
+  const ctx = {
+    // 旧宿主：没有 webServer 服务
+    get: () => undefined,
+    effect: (fn) => fn(),
+    on: () => {},
+  };
+  try {
+    assert.doesNotThrow(() => host.apply(ctx, { samples: false }), "宿主启动是 all-or-nothing，插件绝不能抛");
+  } finally {
+    console.error = previousError;
+  }
+  assert.ok(logged.length > 0, "自禁用必须留下可读原因，而不是静默什么都不做");
+  assert.ok(JSON.stringify(logged).includes("webServer"), "原因里必须点名缺的是哪个接缝");
+  assert.ok(JSON.stringify(logged).includes("0.2.0-rc.1"), "原因里必须带上宿主要求，便于用户自查版本");
+});
+
+test("宿主缺 ctx.effect 时拒绝注册无法回收的路由", async () => {
+  const host = await import("../lib/index.js");
+  const routes = [];
+  const logged = [];
+  const previousError = console.error;
+  console.error = (...args) => logged.push(args);
+  const ctx = {
+    webServer: { register: (r) => { routes.push(r); return () => {}; } },
+    get: () => undefined,
+    // 没有 effect：注册出来的路由无法随 fiber 回收，宁可不禁用也不能留下幽灵路由
+  };
+  try {
+    assert.doesNotThrow(() => host.apply(ctx, { samples: false }));
+  } finally {
+    console.error = previousError;
+  }
+  assert.equal(routes.length, 0, "不得注册无法回收的路由");
+  assert.ok(JSON.stringify(logged).includes("effect"));
+});
+
+test("正常宿主仍然完整注册（自禁用不得误伤）", async () => {
+  const host = await import("../lib/index.js");
+  const webServer = makeWebServer();
+  host.apply(makeHostContext(webServer), { samples: false });
+  assert.equal(webServer.routes.length, 1);
+  assert.equal(webServer.routes[0].path, "/api/prompt-seed/optimize");
+});
+
+test("客户端半区缺 slots 服务时警告并退出，不抛异常", async () => {
+  const source = await readFile(join(root, "lib", "client.js"), "utf8");
+  let entry;
+  // eslint-disable-next-line no-new-func
+  new Function("window", source)({ __ModuleLoader__: { load: (value) => { entry = value; } } });
+  const React = { createElement: () => null, useState: (v) => [v, () => {}], useEffect: () => {}, useRef: () => ({}) };
+  const exported = entry.factory(() => React);
+  const warnings = [];
+  const previousWarn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  try {
+    assert.doesNotThrow(() => exported.apply({ effect() {} }), "缺 slots 时不得抛");
+    assert.ok(warnings.length > 0, "必须说明按钮为什么没挂上");
+    assert.ok(JSON.stringify(warnings).includes("slots"));
+  } finally {
+    console.warn = previousWarn;
+  }
+});

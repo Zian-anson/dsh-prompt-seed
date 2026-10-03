@@ -1,0 +1,19 @@
+# Bundle patch layer for dsh-prompt-seed.
+#
+# Applied when a profile lists this bundle in `dsh.profile.bundles`, which
+# `dsh plugin add dsh-prompt-seed` does automatically. The row loads the
+# package's `main` entry as the host half (a plain Cordis plugin); the
+# `dsh.client` declaration in package.json makes the web app load its
+# `./client` bundle as the browser half.
+#
+# The host half registers one loopback-only route, consumed by the browser half:
+#   POST /api/prompt-seed/optimize   { text } -> { ok, text } | { ok, code, error }
+#
+# To use a different path, uncomment the config below and keep
+# src/client-plugin.js's ROUTE in sync (both are compiled into the bundle).
+
+- insert:
+    - id: prompt-seed
+      name: dsh-prompt-seed
+      # config:
+      #   route: /api/prompt-seed/optimize

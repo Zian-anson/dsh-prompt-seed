@@ -1,0 +1,24 @@
+name: Feature request
+description: Suggest a capability or a change in behaviour
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do that the plugin gets in the way of?
+      description: Describe the situation, not the implementation — there may be a better way to get there.
+    validations:
+      required: true
+  - type: textarea
+    id: today
+    attributes:
+      label: What happens today
+      description: What the plugin does now, and why that is not good enough.
+    validations:
+      required: false
+  - type: markdown
+    attributes:
+      value: |
+        Worth noting: this plugin deliberately **adds detail the user did not write**. Requests to
+        make it more conservative are welcome, but they are a product decision, not a bug — please
+        say what you would give up in exchange.

@@ -1,0 +1,43 @@
+name: Bug report
+description: Something behaved differently from what the README describes
+labels: [bug]
+body:
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Host version (`dsh --version`) and plugin version
+      placeholder: "dsh 0.2.0-rc.2 / dsh-prompt-seed 0.8.1"
+    validations:
+      required: true
+  - type: textarea
+    id: input
+    attributes:
+      label: What you typed, and what came back
+      description: Paste both. If the gate rejected the rewrite, the tooltip lists the violations it found.
+    validations:
+      required: true
+  - type: input
+    id: codeversion
+    attributes:
+      label: Loaded code version
+      description: >-
+        Output of: curl -s -X POST 'http://127.0.0.1:19387/api/prompt-seed/optimize?debug=1'
+        -H 'content-type: application/json' --data '{"text":"hi"}' | grep -o '"codeVersion":"[^"]*"'
+      placeholder: '"codeVersion":"0.8.1"'
+    validations:
+      required: false
+  - type: textarea
+    id: console
+    attributes:
+      label: Browser console output
+      description: Especially any `[prompt-seed]` line — the plugin logs why it disabled itself.
+    validations:
+      required: false
+  - type: checkboxes
+    id: restart
+    attributes:
+      label: Before reporting
+      options:
+        - label: I restarted the app after installing or upgrading (host-half code cannot be hot-swapped)
+          required: true

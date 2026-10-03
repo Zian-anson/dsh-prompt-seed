@@ -1,0 +1,62 @@
+{
+  "name": "dsh-prompt-seed",
+  "version": "0.8.1",
+  "description": "DSH composer plugin: turn a one-line seed into a concrete, executable prompt — unfolding the detail the request entails while a semantic fidelity gate keeps the meaning intact. One click, one-click revert.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.19",
+    "dsh": ">=0.2.0-rc.1 <0.3.0-0"
+  },
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "plugin",
+    "prompt",
+    "prompt-engineering",
+    "prompt-optimization",
+    "composer",
+    "llm"
+  ],
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "test": "node tools/build.mjs && node --test test/*.test.mjs",
+    "prepack": "node tools/build.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed.git"
+  },
+  "homepage": "https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed#readme",
+  "bugs": {
+    "url": "https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/issues"
+  }
+}

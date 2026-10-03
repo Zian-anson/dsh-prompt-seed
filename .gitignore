@@ -1,0 +1,30 @@
+# 依赖
+node_modules/
+.pnpm-store/
+
+# 构建产物 lib/ 是**故意提交**的：DSH 直接从 lib/ 加载（main / exports["./client"]），
+# 且预构建安装免掉 pnpm>=10 的 allowBuilds 构建授权。CI 有漂移守卫
+# （npm run build && git diff --exit-code lib/）保证它与 src/ 同步，所以这里不忽略它。
+
+# 打包产物
+*.tgz
+
+# 宿主家目录与本地覆盖层：绝不进仓库
+.dsh/
+*.local.yml
+cordis.patch.local.yml
+
+# 环境与密钥（.env.example 要提交，作为配置示例）
+.env
+.env.*
+!.env.example
+
+# 日志与临时产物
+*.log
+logs/
+coverage/
+*.tsbuildinfo
+
+# 操作系统
+.DS_Store
+Thumbs.db

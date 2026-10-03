@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      # 与 DSH 官方开发指南给出的宿主门槛一致（Node 22.19+ / 24+，CI 覆盖 22.19、24、26）
+      matrix:
+        node: ["22.19", "24", "26"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 零运行时依赖，所以不需要 install 步骤。npm test 会先构建再跑测试。
+      - name: Build and test
+        run: npm test
+
+      # 提交了构建产物就必须保证它没漂移：改了 src/ 忘了 build 是最容易犯的错。
+      - name: Build artifact drift guard
+        run: |
+          npm run build
+          if ! git diff --exit-code -- lib/; then
+            echo "::error::lib/ 与 src/ 不同步。本地跑 npm run build 并提交产物。"
+            exit 1
+          fi
+
+      - name: Package contents
+        run: npm pack --dry-run
+
+      # 个人绝对路径比密钥更常见的泄漏面（配置示例、测试夹具、日志里最容易漏）。
+      - name: Leak guard
+        run: |
+          if grep -rnE '/Users/|/home/[^/]+/|C:\\\\Users\\\\' \
+              --include='*.js' --include='*.mjs' --include='*.json' --include='*.yml' --include='*.md' . \
+              | grep -v node_modules | grep -v '^\./lib/' | grep -v '^\./\.github/workflows/ci\.yml:'; then
+            echo "::error::发现个人绝对路径或疑似本机信息"
+            exit 1
+          fi
+          echo "no personal paths found"
