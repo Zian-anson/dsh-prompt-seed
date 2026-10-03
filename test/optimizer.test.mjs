@@ -2073,3 +2073,36 @@ test("状态行：只在有话说时出现，可关闭，新状态会重新展�
     else globalThis.window = previousWindow;
   }
 });
+
+
+test("拒绝时样本日志记录越线类别（诊断一次真实拒绝时最需要的字段）", async () => {
+  const host = await import("../lib/index.js");
+  const dir = await mkdtemp(join(tmpdir(), "po-reject-log-"));
+  const file = join(dir, "samples.jsonl");
+  try {
+    const webServer = makeWebServer();
+    host.apply(
+      makeHostContext(webServer, {
+        responses: [
+          textChunks("请审查这个接口的安全问题，并给出修复建议与实施排期。"),
+          textChunks("SCOPE_ADDED: 实施排期"),
+          textChunks("请审查这个接口的安全问题，并给出修复建议。"),
+          textChunks("SCOPE_ADDED: 实施排期"),
+        ],
+      }),
+      { samples: file },
+    );
+    const res = makeResponse();
+    await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这个接口有没有问题" }) }), res);
+    const body = JSON.parse(res.body);
+    assert.equal(body.code, "fidelity_rejected");
+    assert.deepEqual(body.violations.map((v) => v.kind), ["scope_added"], "响应带结构化违规");
+    assert.equal(body.violations[0].label, "增加了原本没有的要求", "客户端直接用中文类别渲染");
+
+    const record = JSON.parse((await readFile(file, "utf8")).trim().split("\n")[0]);
+    assert.equal(record.code, "fidelity_rejected");
+    assert.deepEqual(record.violations, ["scope_added"], "日志必须记下类别，而不是空数组");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
