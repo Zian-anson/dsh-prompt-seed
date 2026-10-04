@@ -686,3 +686,83 @@ function pairOf(ch) {
   if (ch === "\u300c") return "\u300d";
   return ch;
 }
+
+// ---------------------------------------------------------------------------
+// 信号推断与短指令度契约（0.9.0）。两类输入都不走补全契约：
+//   - 纯信号（数字 / "继续"）自身无内容，一切来自上下文锚点；
+//   - 焦点短指令（"改一下" / "不对"）有明确动词，发散只限"度"栅栏内。
+// ---------------------------------------------------------------------------
+
+/** 信号推断 system 契约：把一个无内容信号展开成用户的下一句话。 */
+export const SIGNAL_SYSTEM_TEMPLATE = `You turn a bare signal into the user's next message to a coding assistant. Nothing else.
+The signal carries NO content of its own: a number is a choice, an answer, or a nudge; a word like 继续 is a go-ahead. Everything else comes from the ANCHOR.
+RULES:
+1. Ground every word in the ANCHOR; reuse its key phrase. The signal's only job is [choice N / answer / continue].
+2. Never invent goals, tools, numbers, paths, names, or scope that the ANCHOR does not contain.
+3. At most 120 characters. The user's language. One or two sentences.
+4. If the ANCHOR cannot support the expansion, output exactly [无法推断] and nothing else.
+EXAMPLES (anchor: 要不要继续？1. 继续梳理剩余功能 2. 先停下来):
+- input "1" → 刚好: 继续，把剩下的功能梳理完。
+- input "1" → 过头: 继续梳理，并把结果整理成文档发给我。（新增交付物）
+- input "42" → [无法推断]（42 对应不上任何选项，绝不硬猜）`;
+
+/** 短指令度契约：动词明确、宾语空缺的输入如何"有度地"发散。 */
+export const DEICTIC_SYSTEM_TEMPLATE = `You expand a short directive (改一下 / 不对 / 换一个 / redo) into the user's next message to a coding assistant. Nothing else.
+DEGREE RULES - this is the whole job:
+1. The referent MUST come from CONTEXT (what was just discussed). Resolving it is mandatory, not divergence.
+2. Diverge ONLY inside: (a) natural sub-parts of the user's own verb (改 needs a target value, so offering candidates is allowed); (b) implied immediate follow-ups of that verb (不对 → point out what missed the point, then redo by the original intent).
+3. NEVER add: new goals, new tools or tech stacks, new numbers, paths, or names, new scope. Nothing the user did not already say or accept in CONTEXT.
+4. Keep the user's verb verbatim (改 stays 改; 不对 opens a correction - never a new task).
+5. At most 180 characters. The user's language.
+6. If the referent is not identifiable from CONTEXT, output exactly [无法确定指代对象] and nothing else.
+EXAMPLES (context: 刚才把按钮颜色改成了红色):
+- input "改一下" → 刚好: 把刚才那个按钮的红色再改一下，先给我两三个候选颜色。
+- input "改一下" → 不够: 改一下。（等于没干）
+- input "改一下" → 过头: 把按钮改成 #2F6FED，同步 hover 和禁用态，并统一全站配色。（新数值 + 新范围）
+- input "不对" (context: 刚给出了实现方案) → 刚好: 刚才那个方案不对，先停下；说下哪里不符合我的原意，再按原意重做。
+- input "不对" → 过头: 方案不对，改用 Redis 重做相关模块。（新技术栈 + 新范围）`;
+
+/** 短指令一次收敛失败后的收紧后缀。 */
+export const DEICTIC_RETRY_SUFFIX = `
+
+TIGHTENING (previous draft broke the degree rules): cut everything not traceable to the user's own words or CONTEXT. Keep the verb verbatim. Hard cap 120 characters. When in doubt, output less.`;
+
+/**
+ * 信号推断的 system 提示词。
+ * @returns {string} 契约文本。
+ */
+export function buildSignalSystemPrompt() {
+  return (getTemplateOverrides()?.signalSystem ?? SIGNAL_SYSTEM_TEMPLATE).trim();
+}
+
+/**
+ * 短指令度契约的 system 提示词。
+ * @param {{tightened?: boolean}} [options] 是否追加收紧后缀。
+ * @returns {string} 契约文本。
+ */
+export function buildDeicticSystemPrompt(options = {}) {
+  const base = (getTemplateOverrides()?.deicticSystem ?? DEICTIC_SYSTEM_TEMPLATE).trim();
+  return options.tightened === true ? base + DEICTIC_RETRY_SUFFIX : base;
+}
+
+/**
+ * 信号推断的 user 提示词：信号 + 角色（choice/answer/continue）+ 锚点。
+ * @param {string} token 信号原词。
+ * @param {string} mode 推断角色。
+ * @param {string} anchor 上下文锚点。
+ * @returns {string} user 提示词。
+ */
+export function renderSignalUserPrompt(token, mode, anchor) {
+  const role = mode === "choice" ? `the user is choosing option ${token}` : mode === "answer" ? `the user is answering the pending question with "${token}"` : "the user wants that pending item to continue";
+  return `SIGNAL: ${token}\nROLE: ${role}\nANCHOR (from the conversation): ${anchor}\n\nWrite the user's next message. Ground it in the ANCHOR only.`;
+}
+
+/**
+ * 短指令的 user 提示词：短指令 + 上下文。
+ * @param {string} input 用户短指令。
+ * @param {{role: string, text: string}[] | undefined} context 最近会话消息。
+ * @returns {string} user 提示词。
+ */
+export function renderDeicticUserPrompt(input, context) {
+  return renderContextBlock(context) + `SHORT DIRECTIVE: ${input}\n\nResolve its referent from the conversation above, then expand within the degree rules.`;
+}

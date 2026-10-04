@@ -2075,3 +2075,189 @@ test("样本记录区分界面调用与脚本探针（否则验证脚本会淹�
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// --------------------------------------------------------------------------
+// 信号与短指令推断（0.9.0）
+// --------------------------------------------------------------------------
+
+import {
+  DEICTIC_FALLBACK_MARKER,
+  SIGNAL_FALLBACK_MARKER,
+  classifySignalInput,
+  checkDeicticDegree,
+  checkSignalOutput,
+  describeMode,
+  extractAssistantTail,
+  inferPendingItem,
+  parseOptions,
+} from "../src/signal-inference.js";
+
+test("classifySignalInput 分类纯数字/信号词/短指令/其他", () => {
+  assert.equal(classifySignalInput("42").kind, "number");
+  assert.equal(classifySignalInput("1").kind, "number");
+  assert.equal(classifySignalInput("3.14").kind, "number");
+  assert.equal(classifySignalInput("继续").kind, "signal");
+  assert.equal(classifySignalInput("ok").kind, "signal");
+  assert.equal(classifySignalInput("改一下").kind, "deictic");
+  assert.equal(classifySignalInput("不对").kind, "deictic");
+  assert.equal(classifySignalInput("换一个").kind, "deictic");
+  // 不该命中的：普通种子、带锚定的精确指令、问句、长句
+  assert.equal(classifySignalInput("帮我做个图片压缩").kind, "none");
+  assert.equal(classifySignalInput("删除 src/utils/legacy.js 的导出").kind, "none");
+  assert.equal(classifySignalInput("这样对吗").kind, "none");
+  assert.equal(classifySignalInput("把整个导出报表模块重写成异步队列").kind, "none");
+  assert.equal(describeMode("42"), "signal");
+  assert.equal(describeMode("改一下"), "deictic");
+  assert.equal(describeMode("帮我做个功能"), null);
+});
+
+test("parseOptions 解析行内与圈号选项，切在下一个选项标记处", () => {
+  const map = parseOptions("要不要继续？1. 继续梳理剩余功能 2. 先停下来");
+  assert.equal(map.get("1"), "继续梳理剩余功能");
+  assert.equal(map.get("2"), "先停下来");
+  const circled = parseOptions("选一个：①本地缓存 ②服务端缓存");
+  assert.equal(circled.get("1"), "本地缓存");
+  assert.equal(circled.get("2"), "服务端缓存");
+});
+
+test("纯数字无上下文 → cannot_infer，零模型调用", async () => {
+  const llm = fakeLlm([]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "42" });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, ERROR_CODES.CANNOT_INFER);
+  assert.equal(llm.seen.length, 0, "无上下文时不得发起任何模型调用");
+});
+
+test("数字对不上任何选项 → cannot_infer，绝不硬猜", async () => {
+  const llm = fakeLlm([]);
+  const assistantTail = { role: "assistant", text: "要不要继续？1. 继续梳理剩余功能 2. 先停下来" };
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "42", assistantTail });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, ERROR_CODES.CANNOT_INFER);
+  assert.equal(llm.seen.length, 0, "42 对应不上选项是确定性判定，不应花调用");
+});
+
+test("数字命中选项 → 展开为选中项，锚定校验通过", async () => {
+  const llm = fakeLlm(textChunks("继续，把剩下的功能梳理完。"));
+  const assistantTail = { role: "assistant", text: "要不要继续？1. 继续梳理剩余功能 2. 先停下来" };
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "1", assistantTail });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "signal");
+  assert.equal(result.tier, "signal");
+  assert.equal(llm.seen.length, 1);
+  assert.ok(result.text.includes("梳理"), "输出必须锚定在选项文本上");
+});
+
+test("模型回执 [无法推断] → 转为 cannot_infer", async () => {
+  const llm = fakeLlm(textChunks(SIGNAL_FALLBACK_MARKER));
+  const assistantTail = { role: "assistant", text: "要不要继续？1. 继续梳理 2. 先停" };
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "1", assistantTail });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, ERROR_CODES.CANNOT_INFER);
+});
+
+test("信号输出未锚定上下文 → cannot_infer", async () => {
+  const llm = fakeLlm(textChunks("帮我重新部署服务器并检查全部日志。"));
+  const assistantTail = { role: "assistant", text: "要不要继续？1. 继续梳理剩余功能 2. 先停下来" };
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "1", assistantTail });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, ERROR_CANNOT_INFER_REF(), "无锚点的输出宁可拒绝");
+});
+
+function ERROR_CANNOT_INFER_REF() {
+  return ERROR_CODES.CANNOT_INFER;
+}
+
+test("信号词 继续 + 助手待续提议 → 展开为放行动作", async () => {
+  const llm = fakeLlm(textChunks("继续，按刚才说的把插件发到 npm。"));
+  const assistantTail = { role: "assistant", text: "已经打包好了，要不要继续发布到 npm？" };
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "继续", assistantTail });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "signal");
+  assert.ok(result.text.includes("npm"));
+});
+
+test("短指令无上下文 → cannot_infer，零模型调用", async () => {
+  const llm = fakeLlm([]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "改一下" });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, ERROR_CODES.CANNOT_INFER);
+  assert.equal(llm.seen.length, 0);
+});
+
+test("短指令 + 上下文 → 有度展开，动词逐字保留", async () => {
+  const llm = fakeLlm(textChunks("把刚才那个按钮的红色再改一下，先给我两三个候选颜色。"));
+  const context = [{ role: "user", text: "刚才把按钮颜色改成了红色" }];
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "改一下", context });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "deictic");
+  assert.ok(result.text.includes("改"), "动词必须逐字保留");
+  assert.ok(result.text.length <= 180);
+  assert.equal(llm.seen.length, 1);
+});
+
+test("短指令发散越界 → 一次收紧重试，成功则带 repairs=1", async () => {
+  const overlong = "把按钮改成 #2F6FED，同步更新 hover 态、禁用态、加载态的配色，把全站色彩统一到新的设计规范，重做图标体系，调整间距与圆角，补充完整的变更说明文档，并把这次改动写进里程碑计划、通知设计团队评审、安排灰度发布与回滚预案，同时把导航栏和侧边栏也一起重构，输出迁移计划与风险清单，顺便把首页的营销位、活动页和落地页也按同一套视觉重新排版，拉齐埋点口径与数据看板，最后组织一次全员设计走查确认无遗漏再上线。";
+  assert.ok(overlong.length > 180, "测试前提：越界文本必须真的超过 180 字上限（实际 " + overlong.length + "）");
+  const llm = scriptedLlm([
+    textChunks(overlong),
+    textChunks("把刚才那个按钮的颜色再改一下，先给我几个候选。"),
+  ]);
+  const context = [{ role: "user", text: "刚才把按钮颜色改成了红色" }];
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "改一下", context });
+  assert.equal(result.ok, true);
+  assert.equal(result.gate.repairs, 1);
+  assert.equal(result.gate.rechecked, true);
+  assert.equal(llm.seen.length, 2);
+});
+
+test("短指令两次越界 → fidelity_rejected", async () => {
+  const overlong = "把按钮改成 #2F6FED，同步更新 hover 态、禁用态、加载态的配色，把全站色彩统一到新的设计规范，重做图标体系，调整间距与圆角，补充完整的变更说明文档，并把这次改动写进里程碑计划、通知设计团队评审、安排灰度发布与回滚预案，同时把导航栏和侧边栏也一起重构，输出迁移计划与风险清单，并把页脚、弹窗、下拉菜单、表格、表单控件全部对齐同一套设计 token，生成前后对比截图。";
+  assert.ok(overlong.length > 180, "测试前提：越界文本必须真的超过 180 字上限");
+  const llm = scriptedLlm([textChunks(overlong), textChunks(overlong)]);
+  const context = [{ role: "user", text: "刚才把按钮颜色改成了红色" }];
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "改一下", context });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, ERROR_CODES.FIDELITY_REJECTED);
+});
+
+test("短指令指代消解失败回执 → cannot_infer", async () => {
+  const llm = fakeLlm(textChunks(DEICTIC_FALLBACK_MARKER));
+  const context = [{ role: "user", text: "随便一段无关上下文" }];
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "改一下", context });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, ERROR_CODES.CANNOT_INFER);
+});
+
+test("extractAssistantTail 提取最近助手文本话轮并跳过空内容", () => {
+  const surface = {
+    events: [
+      { type: "user/message", data: { role: "user", content: "帮我看看" } },
+      { type: "assistant/message", data: { role: "assistant", content: [{ type: "text", text: "" }] } },
+      { type: "assistant/message", data: { role: "assistant", content: [{ type: "text", text: "要不要继续？1. 继续 2. 停" }] } },
+    ],
+  };
+  const tail = extractAssistantTail(surface);
+  assert.equal(tail?.role, "assistant");
+  assert.ok(tail.text.includes("要不要继续"));
+  assert.equal(extractAssistantTail(null), undefined);
+  assert.equal(extractAssistantTail({ events: [] }), undefined);
+});
+
+test("inferPendingItem 优先级：选项 > 助手问题 > 用户未答问题", () => {
+  const assistantTail = { role: "assistant", text: "要继续吗？1. 打包 2. 先停" };
+  assert.equal(inferPendingItem({ kind: "number", token: "1" }, undefined, assistantTail).mode, "choice");
+  const question = { role: "assistant", text: "这个月几号发布？" };
+  assert.equal(inferPendingItem({ kind: "number", token: "15" }, undefined, question).mode, "answer");
+  const userQ = [{ role: "user", text: "这个插件叫什么名字？" }];
+  assert.equal(inferPendingItem({ kind: "number", token: "42" }, userQ, undefined).mode, "continue");
+  assert.equal(inferPendingItem({ kind: "deictic", token: "改一下" }, undefined, undefined).mode, "none");
+});
+
+test("checkDeicticDegree 的动词守恒与上限独立可测", () => {
+  assert.equal(checkDeicticDegree("把红色再改一下，给我候选色。", "改一下").ok, true);
+  assert.equal(checkDeicticDegree("调整一下样式。", "改一下").reason, "verb_missing");
+  assert.equal(checkDeicticDegree("x".repeat(200), "改一下").reason, "overlong");
+  assert.equal(checkSignalOutput("继续梳理。", "1", "继续梳理剩余功能", "choice").ok, true);
+  assert.equal(checkSignalOutput("十五号。", "15", "几号发布？", "answer").reason, "token_missing");
+});

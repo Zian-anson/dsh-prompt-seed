@@ -9,6 +9,37 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-04
+
+### Added
+
+- **Signal inference and the deictic degree contract.** Two input shapes the elaboration
+  contract was never designed for now have dedicated semantics, both driven by a new pure
+  module (`src/signal-inference.js`) whose classification, anchor inference, and degree
+  checks are entirely deterministic — the model is only ever invited into a pen the rules
+  built around it.
+  - **A bare signal** (a number like `"42"`, or a go-ahead like `"继续"`) carries no task
+    content of its own; its only meaning is "continue with what the conversation left
+    pending". The host now also extracts the latest **assistant turn**
+    (`extractAssistantTail`) — options, pending questions, and continuation offers live
+    there, and a user-turns-only window cannot see them. Inference priority: an option
+    list the number matches (`choice`) → a question the assistant left pending
+    (`answer`) → the user's own unanswered question (`continue`). If nothing pending
+    matches, the result is an explicit `cannot_infer` with **zero model calls** — "42"
+    against options 1/2 is a deterministic refusal, never a guess. Model-side refusal
+    markers (`[无法推断]`) and ungrounded outputs are converted to the same code.
+  - **A short directive** (`"改一下"`, `"不对"`, `"换一个"`) has a clear verb and a
+    missing object. Expansion runs under a degree contract: the referent must come from
+    context; divergence is allowed only inside the natural sub-parts of the user's own
+    verb and its implied immediate follow-ups; new goals, tools, numbers, paths, or scope
+    are forbidden; the verb must survive verbatim; the output is hard-capped at 180
+    characters. One tightened retry, then `fidelity_rejected`. An unresolvable referent
+    is reported honestly (`[无法确定指代对象]` → `cannot_infer`).
+  - The event log gains `mode: "signal" | "deictic"`, and context reading now triggers
+    for signal/deictic inputs even when the draft is longer than the old 12-char rule.
+  - Sixteen new tests cover the classifier, anchor-priority order, both refusal paths,
+    the degree cap with a genuine >180-char violation, and the grounding check.
+
 ## [0.8.7] - 2026-10-03
 
 ### Added
