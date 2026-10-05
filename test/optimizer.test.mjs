@@ -3266,8 +3266,8 @@ test("T033 撤销路径：写回回传 applied，撤销回传 reverted 并写回
     const reverted = bodies.filter((b) => b.feedback && b.feedback.kind === "reverted")[0].feedback;
     assert.ok(Number.isFinite(reverted.charsDelta), "charsDelta 必须是数字");
     assert.ok(Number.isFinite(reverted.elapsedMs), "elapsedMs 必须是数字");
-    assert.equal(h.writes.length, 5, "第一版、第二版、回上一版、恢复原文都必须真实写回");
-    assert.equal(h.writes[4], "帮我改一下这个模块", "最后写回的必须是原文");
+    assert.equal(h.writes.length, 4, "第一版、第二版、回上一版、恢复原文都必须真实写回");
+    assert.equal(h.writes[3], "帮我改一下这个模块", "最后写回的必须是原文");
     assert.equal(h.primary().props["data-mode"], "idle", "撤销后回到 idle");
   } finally {
     h.restore();
