@@ -2540,3 +2540,36 @@ test("T009 目录缓存：目录被外部删除后，下一次写入必须自愈
     await rm(parent, { recursive: true, force: true });
   }
 });
+
+// --------------------------------------------------------------------------
+// T010：会话分支与 depth/上下文的交互矩阵
+// --------------------------------------------------------------------------
+
+test("T010 会话分支：depth 不改变契约，上下文刻意不注入", async () => {
+  const llm = fakeLlm(textChunks("这是怎么回事？"));
+  const res = await optimizePromptText({
+    llm,
+    route: ROUTE,
+    text: "这是怎么回事？",
+    depth: "deep",
+    context: [{ role: "user", text: "刚才说的是打包脚本的问题" }],
+  });
+  assert.equal(res.ok, true);
+  assert.equal(res.mode, "conversational", "提问走会话分支");
+  assert.equal(llm.seen.length, 1, "会话分支只调用一次");
+  const system = llm.seen[0].system;
+  assert.ok(system.includes("conversational message"), "必须是轻润色契约");
+  assert.ok(!system.includes("You expand prompts"), "绝不能进入补全契约");
+  assert.ok(!/depth|深度/i.test(system), "depth 后缀不得进入会话契约");
+  const user = llm.seen[0].messages[0].content;
+  assert.ok(!user.includes("刚才说的是打包脚本的问题"), "会话分支刻意不携带上下文，堵死\"用上下文补内容\"的路径");
+});
+
+test("T010 提问里带路径与标识符，仍走会话分支（有意的前置优先级）", async () => {
+  const text = "src/utils/format.js 里的 formatBytes 为什么返回了负数？";
+  const llm = fakeLlm(textChunks(text));
+  const res = await optimizePromptText({ llm, route: ROUTE, text });
+  assert.equal(res.mode, "conversational");
+  assert.ok(llm.seen[0].system.includes("conversational message"), "提问就是提问，不因为提到文件而变成待补全的种子");
+  assert.equal(res.text, text, "原样返回（本例模型回显输入）");
+});
