@@ -8,13 +8,16 @@ draft, click **✦**, and it is rewritten in place into a prompt an agent can ac
 sure the meaning and the tone survive. Click **↺** to get your original back.
 
 ```
-帮我做个图片压缩的功能
+make an image compression feature
         │  click ✦
         ▼
-帮我做一个图片压缩功能：支持上传 jpg、png、webp，可设置压缩质量或目标体积，
-压缩前后显示文件大小与清晰度对比，多张可批量压缩打包下载。注意处理大图不卡页面、
-透明 png 保持透明、格式不支持时给提示、压缩失败保留原图。
-        │  written in place, button becomes ↺   (凭证：保真 ✓ · +178 字 · 补全：格式、质量、边界情况)
+Make an image compression feature: accept jpg, png and webp uploads; let me set
+a quality level or a target size; show a before/after comparison of file size and
+sharpness; compress several images in one batch and download them as one archive.
+Keep the page responsive on large images, keep transparent pngs transparent, say
+so when a format is unsupported, and keep the original when a compression fails.
+        │  written in place, button becomes ↺
+        │  (credential: fidelity ✓ · +178 chars · filled in: formats, quality, edge cases)
         ▼
 one-click revert · ✦ regenerate another version · ‹ step back a version
 ```
@@ -32,7 +35,7 @@ did not write. This plugin does the opposite thing on purpose: a one-line seed i
 | already-precise instruction | reworded, sometimes with extra procedure appended | **left essentially as-is** (measured 1.0–1.1×), via a separate precise-input contract |
 | fidelity check | deterministic string check: did every path / identifier / number survive? | **semantic audit** by a second call, classifying the failure: `DISTORTED` / `SCOPE_ADDED` / `CONTRADICTED` / `TONE_SHIFTED` / `PADDED` |
 | on a violation | accept, or reject outright | **targeted repair by violation class**, re-audited; only reject if it still distorts |
-| what you see | a length ratio | **a gate credential**: `保真 ✓ · 增加 150 字 · 补全：边界情况、失败处理` |
+| what you see | a length ratio | **a gate credential**: fidelity ✓ · +150 chars · filled in: edge cases, failure handling |
 | not happy with the result | revert and click again | **✦ regenerate** (keeps up to 3 versions) and **‹ step back** |
 
 `PADDED` (padding a request that was already complete) and `TONE_SHIFTED` (a request rewritten into
@@ -89,28 +92,28 @@ with `dsh plugin --profile <name> remove dsh-prompt-seed`.
 
 Two input shapes that the elaboration contract was never designed for get dedicated semantics:
 
-**A bare signal** — a number like 42, or a go-ahead like 继续 — carries no task content. Its only
+**A bare signal** — a number like 42, or a go-ahead like "continue" or "ok" — carries no task content. Its only
 meaning is: continue with what the conversation left pending. So it is resolved against an anchor
 (the latest assistant turn plus the latest user turn) in a fixed priority order, and **refused
 honestly when nothing matches**:
 
 | Anchor found in context | Inference | Example |
 |---|---|---|
-| an option list the number matches | **choice** | 1 + 「要不要继续？1. 继续梳理 2. 先停」→ 继续梳理 |
-| a question the assistant left pending | **answer** | 15 + 「这个月几号发布？」→ 15 号发布 |
-| the user's own unanswered question / a continuation offer | **continue** | 继续 → 放行提议的动作 |
+| an option list the number matches | **choice** | 1 + "Continue? 1. keep organizing 2. stop for now" → keep organizing |
+| a question the assistant left pending | **answer** | 15 + "When does it ship this month?" → ships on the 15th |
+| the user's own unanswered question / a continuation offer | **continue** | "continue" → proceed with the offered action |
 | nothing matches | **cannot_infer, zero model calls** | 42 against options 1/2 is a deterministic refusal — never a guess |
 
-**A short directive** — 改一下 / 不对 / 换一个 — has a clear verb and a missing object. Expansion
+**A short directive** — "fix it" / "wrong" / "change it" — has a clear verb and a missing object. Expansion
 runs inside a **degree contract**: the referent must come from context; divergence is allowed only
 inside the natural sub-parts of the user's own verb and its implied follow-ups; new goals, tools,
 numbers, or scope are forbidden; the verb must survive verbatim; the output is hard-capped at 180
 characters, with one tightened retry before rejection. An unresolvable referent is reported, not
-invented (「无法确定指代对象」→ cannot_infer).
+invented (an unresolvable referent maps to cannot_infer).
 
-Measured against the live model — 改一下 in a button-color context expands to 「刚才那个按钮改成的
-红色我不太满意，再改一下，先给我两三个候选颜色对比着看。」(37 chars, verb preserved, nothing
-invented), while 42 with mismatched options refuses in 0 calls.
+Measured against the live model: a short directive in a button-color context expands to a single
+sentence under 40 characters with the user's verb preserved and nothing invented, while a mismatched
+number refuses in 0 model calls.
 
 ## How it works
 
@@ -175,10 +178,10 @@ The row accepts a few optional keys; defaults are correct for almost everyone.
     - id: prompt-seed
       name: dsh-prompt-seed
       config:
-        route: /api/prompt-seed/optimize   # 路由路径（默认即此值）
-        # provider: zai-coding-cn               # 模型路由覆盖（provider+model 成对生效，
-        # model: glm-5.3-flash                  #   缺省回落 agentDefaultModel 的默认模型）
-        # context: false                        # 关闭会话上下文注入（默认开启）
+        route: /api/prompt-seed/optimize   # route path (this is the default)
+        # provider: zai-coding-cn               # pin the model route (provider + model
+        # model: glm-5.3-flash                  #   work as a pair; defaults to agentDefaultModel)
+        # context: false                        # disable session-context injection (on by default)
 ```
 
 Changing `route` requires editing `src/client-plugin.js`'s `ROUTE` and rebuilding — the browser
@@ -217,17 +220,17 @@ tested-good route is one config line:
 
 The route always answers `200` for business outcomes and puts the outcome in the body.
 
-| `code` | Cause | Shown as |
+| `code` | Cause | User-facing message (the UI ships Chinese strings today; English meaning below) |
 |---|---|---|
-| `empty_input` | draft is blank | 请先输入内容 |
-| `input_too_long` | over 8000 characters | 内容过长，请精简后再优化 |
-| `llm_unavailable` | `llm` service not mounted | 模型服务不可用 |
-| `model_unavailable` | no default model | 未找到可用的默认模型 |
-| `llm_error` | call threw, or `finish` was `error`/`aborted` | 模型调用失败 |
-| `empty_result` | empty after normalization | 模型没有返回有效内容 |
-| `truncated` | `finish.kind === 'max-tokens'` | 结果被截断，请缩短输入后重试 |
-| `nothing_to_optimize` | input is a bare greeting / punctuation only | 内容太短，没有可优化的信息（中性提示，不是故障） |
-| `fidelity_rejected` | rewrite and targeted repair both distort the request | 优化会改变原意，已保留原文（tooltip 追加 `added` 清单：审判抓到的问题） |
+| `empty_input` | draft is blank | Type something first. |
+| `input_too_long` | over 8000 characters | Too long — trim it and try again. |
+| `llm_unavailable` | `llm` service not mounted | Model service unavailable. |
+| `model_unavailable` | no default model | No usable default model. |
+| `llm_error` | call threw, or `finish` was `error`/`aborted` | Model call failed. |
+| `empty_result` | empty after normalization | The model returned nothing usable. |
+| `truncated` | `finish.kind === 'max-tokens'` | Result was truncated — shorten the input and retry. |
+| `nothing_to_optimize` | input is a bare greeting / punctuation only | Too short — nothing to optimize (a neutral hint, not a failure). |
+| `fidelity_rejected` | rewrite and targeted repair both distort the request | The rewrite would change your meaning; your text was kept (the tooltip appends the `added` list: what the audit flagged). |
 | `forbidden` | non-loopback peer or Host | — (403) |
 
 ## Privacy and data flow
@@ -256,7 +259,7 @@ model access and credential handling stay exactly where they already are.
 |---|---|---|
 | No ✦ button | host older than `0.2.0-rc.1`, or the `slots` service is missing | open the browser console — the plugin logs which seam is missing and the version it wants |
 | Click does nothing | the route is not registered | check the host log for the `[prompt-seed] loaded` banner; confirm `--dump-config` shows the row |
-| `模型服务不可用` / `未找到可用的默认模型` | host `llm` or `agentDefaultModel` not mounted | configure a session model, or set `provider` + `model` in the row config |
+| "Model service unavailable" / "No usable default model" | host `llm` or `agentDefaultModel` not mounted | configure a session model, or set `provider` + `model` in the row config |
 | Result is longer/shorter than you want | depth setting | **right-click the ✦ button** to cycle `auto / light / standard / deep`; the choice is remembered |
 | Result was reverted automatically | the fidelity gate judged the rewrite would change your meaning | hover the shield — the tooltip names the violation class; the eye button lets you view the rejected draft anyway |
 | Output keeps getting rejected | the model is weak at instruction-following | point the row at a stronger model (`provider` + `model`) |

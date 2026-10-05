@@ -9,21 +9,32 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+### Documentation
+
+- **The English README is English again.** Examples, credentials, error messages, and config
+  comments had drifted into Chinese (the plugin's UI ships Chinese strings, and sample outputs were
+  pasted verbatim). The English README now uses English examples throughout — a seed, the credential
+  line, the signal/anchor table, the error-code table — while the Chinese README stays fully
+  Chinese; the two cross-link at the top. Where a user-facing message matters, the English table
+  states the English meaning and notes that the UI strings themselves are Chinese-only today
+  (Known limitation #2). CHANGELOG quotes were translated the same way, keeping the facts
+  (call counts, ratios, fallbacks) intact.
+
 ## [0.9.1] - 2026-10-05
 
 ### Added
 
 - **The conversational branch: messages to the assistant are not task seeds.** A live
   regression made it measurable: a question about *where* to publish the plugin
-  (「刚才我想问你的准确的是如何进行开源？」) was rewritten into a task spec for *how* to
+  (roughly: "the question I meant to ask was where to publish this") was rewritten into a task spec for *how* to
   publish — a change of direction the fidelity gate cannot catch, because `SCOPE_ADDED`
   is defined against task seeds. Conversational inputs (meta-talk about the conversation,
-  opinions, why/choice questions, continuation directives like 「你继续看一下这个项目…」)
+  opinions, why/choice questions, continuation directives like "keep going through this project…")
   now get a dedicated light-touch contract: fix typos, punctuation, and grammar only;
   never elaborate, never answer, never turn a question into an instruction. The output is
   capped at input +35% with one tightened retry, and the failure fallback is the
-  **original text** — this branch never rejects (「宁可没干活，不可干错活」). The classifier
-  is deliberately conservative: anything with a task verb (「帮我做X」「实现一个X」) still
+  **original text** — this branch never rejects (better no work than the wrong work). The classifier
+  is deliberately conservative: anything with a task verb ("build me an X", "implement an X") still
   goes to the elaboration pipeline, so seeds cannot be swallowed by mistake.
 - `mode: "conversational"` in the event log; seven new tests cover the real regression
   inputs, the non-swallowing guarantees, and both fallback paths.
@@ -37,7 +48,7 @@ developer preview and moves quickly. Patch bumps will not break anything.
   module (`src/signal-inference.js`) whose classification, anchor inference, and degree
   checks are entirely deterministic — the model is only ever invited into a pen the rules
   built around it.
-  - **A bare signal** (a number like `"42"`, or a go-ahead like `"继续"`) carries no task
+  - **A bare signal** (a number like `"42"`, or a go-ahead like `"continue"` or `"ok"`) carries no task
     content of its own; its only meaning is "continue with what the conversation left
     pending". The host now also extracts the latest **assistant turn**
     (`extractAssistantTail`) — options, pending questions, and continuation offers live
@@ -46,14 +57,14 @@ developer preview and moves quickly. Patch bumps will not break anything.
     (`answer`) → the user's own unanswered question (`continue`). If nothing pending
     matches, the result is an explicit `cannot_infer` with **zero model calls** — "42"
     against options 1/2 is a deterministic refusal, never a guess. Model-side refusal
-    markers (`[无法推断]`) and ungrounded outputs are converted to the same code.
-  - **A short directive** (`"改一下"`, `"不对"`, `"换一个"`) has a clear verb and a
+    markers (a literal "[cannot infer]" token) and ungrounded outputs are converted to the same code.
+  - **A short directive** (`"fix it"`, `"wrong"`, `"change it"`) has a clear verb and a
     missing object. Expansion runs under a degree contract: the referent must come from
     context; divergence is allowed only inside the natural sub-parts of the user's own
     verb and its implied immediate follow-ups; new goals, tools, numbers, paths, or scope
     are forbidden; the verb must survive verbatim; the output is hard-capped at 180
     characters. One tightened retry, then `fidelity_rejected`. An unresolvable referent
-    is reported honestly (`[无法确定指代对象]` → `cannot_infer`).
+    is reported honestly (an unresolvable-referent token → `cannot_infer`).
   - The event log gains `mode: "signal" | "deictic"`, and context reading now triggers
     for signal/deictic inputs even when the draft is longer than the old 12-char rule.
   - Sixteen new tests cover the classifier, anchor-priority order, both refusal paths,
@@ -78,7 +89,7 @@ developer preview and moves quickly. Patch bumps will not break anything.
 - **The status line above the composer is gone** (added in 0.8.4, removed one release later). It was
   wrong in a way that should have been caught before shipping: it rendered as a **full-width banner
   for a single line of text**, and it appeared for transient states that carry no information at all
-  — "正在优化…（再次点击可取消）" duplicated a spinner the button was already showing, and the
+  — an "optimizing… (click again to cancel)" line duplicated a spinner the button was already showing, and the
   success credential duplicated the `✓ +131` badge that sits on the button itself. Only a rejected
   run genuinely needs a resident explanation, and that case is rare enough that a banner which shifts
   the composer on every click is not a trade worth making.
@@ -91,7 +102,7 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ### Kept from 0.8.4
 
-- Rejection reasons still lead with the **violation class** ("增加了原本没有的要求") plus one short
+- Rejection reasons still lead with the **violation class** ("added requirements that were never there") plus one short
   example, in the button's tooltip. That message rewrite is what actually fixed the original problem
   — the old text pasted the audit model's raw sentences into a 110-character wall. At ~50 characters
   it reads fine as a tooltip.
@@ -114,7 +125,7 @@ developer preview and moves quickly. Patch bumps will not break anything.
   medium that appears after a delay, cannot wrap or be laid out, cannot be dismissed, and vanishes
   when the mouse moves. Both need a resident, readable, closable carrier. It renders nothing when
   there is nothing to say, and closing a message only closes that message.
-- **Rejections now report the violation class first** — "增加了原本没有的要求" — followed by one
+- **Rejections now report the violation class first** — "added requirements that were never there" — followed by one
   concrete example, instead of pasting the audit model's raw sentences into the interface, which
   read like an internal log and left the user to guess why it counted as a problem. The host sends
   structured `violations: [{kind, label, text}]` for this.
@@ -184,8 +195,9 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 - **Gate credential.** The audit call now also emits a `DETAIL:` line naming what the rewrite filled
   in, at no extra call cost. The button shows `✓` (audited clean) or `⟳` (converged) beside the size
-  delta, and the tooltip reads `保真 ✓ · 增加 150 字 · 补全：边界情况、失败处理`. A skipped audit is
-  reported honestly as `未审判（输入已精确）` rather than as a pass.
+  delta, and the tooltip reads fidelity ✓ · +150 chars · filled in: edge cases, failure handling.
+  A skipped audit is reported honestly as "not audited (the input was already precise)" rather than
+  as a pass.
 - **Regenerate and version history.** The revert state offers `✦` (re-run from the original, keeping
   up to three versions) and `‹` (step back one version).
 - **Adaptive depth.** Local counts of `reverted` / `retried` / `submitted` choose the depth
