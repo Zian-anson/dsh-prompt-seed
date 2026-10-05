@@ -293,7 +293,7 @@ just installed.
 ## Development
 
 ```sh
-npm test        # builds lib/ then runs 120 tests
+npm test        # builds lib/ then runs 127 tests
 npm run build   # tools/build.mjs → lib/
 ```
 

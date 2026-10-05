@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
   - name: How the contract works
-    url: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/blob/main/docs/design-notes.md
+    url: https://github.com/Zian-anson/dsh-prompt-seed/blob/main/docs/design-notes.md
     about: Why the plugin adds detail, what the gate checks, and which earlier designs were wrong.

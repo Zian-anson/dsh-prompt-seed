@@ -6,7 +6,7 @@ Thanks for considering a contribution. This is a small, dependency-free plugin; 
 ## Development setup
 
 ```sh
-git clone https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed
+git clone https://github.com/Zian-anson/dsh-prompt-seed
 cd dsh-prompt-seed
 npm test        # builds lib/ from src/, then runs the test suite
 ```

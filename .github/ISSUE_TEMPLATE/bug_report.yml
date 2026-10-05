@@ -7,7 +7,7 @@ body:
     attributes:
       label: Versions
       description: Host version (`dsh --version`) and plugin version
-      placeholder: "dsh 0.2.0-rc.2 / dsh-prompt-seed 0.8.1"
+      placeholder: "dsh 0.2.0-rc.2 / dsh-prompt-seed 0.9.1"
     validations:
       required: true
   - type: textarea
@@ -24,7 +24,7 @@ body:
       description: >-
         Output of: curl -s -X POST 'http://127.0.0.1:19387/api/prompt-seed/optimize?debug=1'
         -H 'content-type: application/json' --data '{"text":"hi"}' | grep -o '"codeVersion":"[^"]*"'
-      placeholder: '"codeVersion":"0.8.1"'
+      placeholder: '"codeVersion":"0.9.1"'
     validations:
       required: false
   - type: textarea
