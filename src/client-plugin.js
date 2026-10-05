@@ -377,6 +377,14 @@ function OptimizeButton(props) {
           setDeclined(res.error || '内容太短，没有可优化的信息');
           return;
         }
+        // cannot_infer 与 nothing_to_optimize 同类：这是**设计内的中性拒绝**，
+        // 不是故障。纯信号（数字/继续）在上下文里找不到锚点时，系统"拒绝硬猜"
+        // 正是它该做的事——用红色 ⚠ 报成错误会让用户以为插件坏了，而正确
+        // 反应是"补一句你想问什么"。走 declined（中性盾）态。
+        if (res && res.code === 'cannot_infer') {
+          setDeclined(res.error || '上下文不足以推断这个输入的含义，请直接写出想说的内容');
+          return;
+        }
         if (res && res.code === 'fidelity_rejected') {
           // 先报**类别**（"增加了原本没有的要求"），再给一个具体例子。
           // 旧实现直接把模型的原句糊上去，读起来像内部日志，而且看不出"为什么这算问题"。

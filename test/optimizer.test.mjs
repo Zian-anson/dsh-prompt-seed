@@ -2504,3 +2504,18 @@ test("T005 只保留最近两条真实话轮；source 缺失按真实话轮处�
     "source.kind 缺失时按真实用户话轮处理（只有显式非 user 才跳过）",
   );
 });
+
+// --------------------------------------------------------------------------
+// T006：cannot_infer 的前端呈现（设计内的中性拒绝，不是故障）
+// --------------------------------------------------------------------------
+
+test("T006 cannot_infer 在客户端走 declined 中性态，不是红色错误态", async () => {
+  const source = await readFile(join(root, "lib", "client.js"), "utf8");
+  assert.ok(source.includes("cannot_infer"), "客户端必须认识这个码，否则会当未知错误处理");
+  // 分支内部必须是 setDeclined（中性盾），不能是 setError（红色 ⚠）——
+  // 拒绝硬猜是系统按设计工作，报成故障会让用户以为插件坏了。
+  assert.ok(/cannot_infer[\s\S]{0,220}setDeclined/.test(source), "cannot_infer 必须走 declined");
+  assert.ok(!/cannot_infer[\s\S]{0,220}setError/.test(source), "cannot_infer 不能走 error");
+  // 兜底仍在：未知码必须还能报错，而不是静默吞掉
+  assert.ok(source.includes("setError((res && res.error) || '优化失败')"), "未知码兜底必须保留");
+});
