@@ -2754,3 +2754,108 @@ test("T017 两道审判的 fail-open 方向相反：第一道放行，第二道�
   assert.equal(result.gate.rechecked, false);
   assert.equal(llm.seen.length, 4);
 });
+
+// --------------------------------------------------------------------------
+// T022：带重渲染能力的 React 替身 —— 驱动真实的响应路径
+// --------------------------------------------------------------------------
+
+test("T022 驱动完整响应：cannot_infer 必须渲染成 declined 中性态而不是 error", async () => {
+  const source = await readFile(join(root, "lib", "client.js"), "utf8");
+  let entry;
+  new Function("window", source)({ __ModuleLoader__: { load: (v) => { entry = v; } } });
+
+  // 与 T006 的产物断言不同，这里的替身**保留 hook 槽并在 setState 后重渲染**，
+  // 因此可以真的走完 onClick → fetch → setState → 重渲染 这条链。
+  const store = { hooks: [] };
+  // 两条关键规则，缺一条就会无限递归（实测踩过）：
+  //   ① setState 只在微任务里重渲染（同步重渲染会让 effect→setState→渲染 成环）；
+  //   ② effect 在渲染**之后**执行，而不是渲染中同步执行。
+  let cursor = 0;
+  const ranEffects = new Set();
+  let pendingEffects = [];
+  let scheduled = false;
+  let rerender = () => {};
+  const scheduleRerender = () => {
+    if (scheduled) return;
+    scheduled = true;
+    queueMicrotask(() => { scheduled = false; rerender(); });
+  };
+  const React = {
+    createElement(type, props, children) {
+      if (typeof type === "function") return type(props || {});
+      return { type, props: props || {}, children: children === undefined ? [] : [].concat(children) };
+    },
+    useState(initial) {
+      const i = cursor++;
+      if (!(i in store.hooks)) store.hooks[i] = typeof initial === "function" ? initial() : initial;
+      return [
+        store.hooks[i],
+        (value) => {
+          store.hooks[i] = typeof value === "function" ? value(store.hooks[i]) : value;
+          scheduleRerender();
+        },
+      ];
+    },
+    useRef(value) { const i = cursor++; if (!(i in store.hooks)) store.hooks[i] = { current: value }; return store.hooks[i]; },
+    useEffect(fn) { const i = cursor++; pendingEffects.push({ i, fn }); },
+    useCallback(fn) { return fn; },
+    useMemo(fn) { return fn(); },
+  };
+  const exported = entry.factory(() => React);
+
+  const previousFetch = globalThis.fetch;
+  const previousWindow = globalThis.window;
+  globalThis.window = { localStorage: { getItem: () => null, setItem() {} } };
+  const CANNOT_INFER_MESSAGE = "上下文不足以推断这个输入的含义，请直接写出想说的内容";
+  globalThis.fetch = () =>
+    Promise.resolve({
+      json: () => Promise.resolve({ ok: false, code: "cannot_infer", error: CANNOT_INFER_MESSAGE }),
+    });
+
+  try {
+    const registered = [];
+    const slots = {
+      inject(name, cb) { registered.push({ name, value: cb() }); },
+      register(meta, render) { return { meta, render }; },
+    };
+    exported.apply({ slots, effect() {} });
+    const component = registered[0].value.render;
+    const props = {
+      useInput: (selector) => selector({ draft: "42", draftRev: 1, phase: "plain", occurrences: [] }),
+      inputActions: { setDraft() {}, addAttachments() {}, removeAttachment() {}, pruneAttachments() {} },
+      t: (key) => key,
+    };
+
+    let tree = null;
+    const renderOnce = () => {
+      cursor = 0;
+      pendingEffects = [];
+      tree = component(props);
+      // 渲染完成后执行本轮登记、且从未执行过的 effect（与真实 React 空依赖数组等价）
+      for (const item of pendingEffects) {
+        if (ranEffects.has(item.i)) continue;
+        ranEffects.add(item.i);
+        item.fn();
+      }
+      return tree;
+    };
+    rerender = () => { renderOnce(); };
+
+    const first = renderOnce();
+    assert.equal(first.props["data-mode"], "idle", "初始应为 idle");
+    assert.equal(typeof first.props.onClick, "function", "主按钮必须可点击");
+
+    first.props.onClick();
+    for (let i = 0; i < 5; i += 1) await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    assert.equal(tree.props["data-mode"], "declined", "cannot_infer 必须落到中性盾态");
+    assert.notEqual(tree.props.onClick, undefined);
+    const title = String(tree.props.title || "");
+    assert.ok(title.includes("无法推断") || title.includes("上下文不足"), "tooltip 必须给出可读原因，当前：" + title);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
