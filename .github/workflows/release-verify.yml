@@ -1,0 +1,32 @@
+name: Release verification
+
+# 发布之后自动证明"发布物 = 仓库"。
+#
+# 为什么要有这个 workflow：verify-release 是唯一能发现"过期构建被上传""tag 打在错误
+# 提交上""必带文件漏了"的检查，而它此前只能靠维护者记得手动跑——依赖记忆的检查等于
+# 没有检查。发布事件触发后，每个新版本都会自动被证明一次。
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要验证的 tag（例如 v0.9.3）"
+        required: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.19"
+
+      # 校验器把发布包里的 lib/ 与**本地构建产物**逐字节比对，所以必须先构建。
+      - name: Rebuild lib/ from src/
+        run: npm run build
+
+      # 不加 --install：CI 里没有 dsh，实装路径由维护者在本地验证（README 已给命令）。
+      - name: Verify the published asset
+        run: node tools/verify-release.mjs "${{ github.event.release.tag_name || inputs.tag }}"

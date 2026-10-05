@@ -378,6 +378,7 @@ clean clone.
 | Cross-artifact route consistency | test compares `lib/client.js` against the host default | ✅ |
 | `codeVersion` truthfulness | test rewrites `package.json` after load and asserts the reported version is unchanged | ✅ |
 | Bundle manifest, patch, tarball contents | `npm pack` + install into a throwaway profile | ✅ |
+| Published release equals the repository | `tools/verify-release.mjs`, run by CI on every published release | ✅ v0.9.3 byte-identical |
 | Real-model behaviour (seed unfolded, precise preserved, multilingual, depth) | live-route and direct-model probes against the installed bundle | ✅ |
 | Full click-through in a live browser session | not automated — `fetch` → route → refill is exercised in pieces, not end to end | ⛔ |
 
