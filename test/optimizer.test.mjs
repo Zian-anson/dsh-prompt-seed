@@ -2953,3 +2953,31 @@ test("T025 网络失败：fetch reject → error 态，草稿一个字符都不�
     h.restore();
   }
 });
+
+test("T026 陈旧响应必须被丢弃：等待期间用户改过草稿（不变量 I2）", async () => {
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  const h = await makeClientHarness({
+    draft: "帮我改一下这个模块",
+    fetchImpl: () =>
+      pending.then(() => ({
+        json: () => Promise.resolve({ ok: true, text: "请检查该模块的导出结构，并给出整理方案。" }),
+      })),
+  });
+  try {
+    h.tree.props.onClick();
+    await h.settle();
+    assert.equal(h.tree.props["data-mode"], "busy", "等待期间必须是 busy");
+
+    // 用户在等待期间自己动手改了草稿：draftRev 递增，旧请求的结果就此作废。
+    h.editDraft("我自己重新写过的内容");
+    h.render();
+    release();
+    await h.settle();
+
+    assert.deepEqual(h.writes, [], "陈旧响应绝不能写回（否则会覆盖用户刚打的字）");
+    assert.equal(h.tree.props["data-mode"], "idle", "丢弃后回到 idle，而不是进入 revert 态");
+  } finally {
+    h.restore();
+  }
+});
