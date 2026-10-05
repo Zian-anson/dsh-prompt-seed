@@ -355,6 +355,9 @@ clean clone.
 | Gate credential: `DETAIL` parsing, `gate.verdict` / `rechecked` / `repairs` | unit tests | ✅ |
 | Depth: three suffixes, request wiring, invalid-value fallback | unit tests | ✅ |
 | On-demand context: anaphora / short-draft / precise-input rules | unit + route tests | ✅ |
+| Signals & short directives: classification, anchor priority order, refusal paths, degree cap | unit tests + live-model probes (six cases: two refusals at **0 model calls**, four grounded expansions) | ✅ |
+| Conversational branch: classifier on the real regression inputs, non-swallowing guards, cap with original-text fallback | unit tests + live-model probes (three regression inputs came back at **1.00×**, seeds still 17×) | ✅ |
+| Signal / deictic / conversational template overrides | unit tests + route test with a temp `$DSH_HOME` | ✅ |
 | Template overrides: read per request, live edit, fallback, `templates: false` | route test with a temp `$DSH_HOME` | ✅ |
 | Self-disable: missing `webServer` / `effect` / `slots` never throws | unit tests | ✅ |
 | Host route: loopback guard, method/body rejection, optional services | real `req`/`res` stubs | ✅ |
