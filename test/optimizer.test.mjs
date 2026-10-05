@@ -3365,3 +3365,28 @@ test("T035 submitted 信号的两条触发路径：草稿被清空 / 离开 plai
     h.restore();
   }
 });
+
+test("确定性守卫必须走中性盾态：input_too_long / empty_input 不是故障", async () => {
+  const drive = async (code, message) => {
+    const h = await makeClientHarness({
+      draft: "帮我把这个模块整理一下",
+      fetchImpl: () => Promise.resolve({ json: () => Promise.resolve({ ok: false, code, error: message }) }),
+    });
+    try {
+      h.primary().props.onClick();
+      await h.settle();
+      return { mode: h.primary().props["data-mode"], title: String(h.primary().props.title || ""), writes: h.writes.slice() };
+    } finally {
+      h.restore();
+    }
+  };
+
+  const tooLong = await drive("input_too_long", "内容过长，请精简后再优化");
+  assert.equal(tooLong.mode, "declined", "内容过长是守卫不是故障，必须是中性盾态");
+  assert.ok(tooLong.title.includes("过长"), "tooltip 必须给出可读原因，当前：" + tooLong.title);
+  assert.deepEqual(tooLong.writes, [], "守卫拒绝时绝不写回（不变量 I1）");
+
+  const empty = await drive("empty_input", "请先输入内容");
+  assert.equal(empty.mode, "declined", "空输入（curl/脚本路径可达）同样是守卫");
+  assert.deepEqual(empty.writes, []);
+});
