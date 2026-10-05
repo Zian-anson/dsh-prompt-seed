@@ -3056,3 +3056,55 @@ test("T028 路由挂靠 fiber 生命周期：dispose 后不残留，重复 apply
   disposers[1]();
   assert.equal(webServer.routes.length, 0, "再次回收仍然干净");
 });
+
+test("T030 反馈分支的退化输入：字段缺失、非对象、非数值都不得崩", async () => {
+  const host = await import("../lib/index.js");
+  const dir = await mkdtemp(join(tmpdir(), "po-feedback-edge-"));
+  const file = join(dir, "nested", "samples.jsonl");
+  try {
+    const webServer = makeWebServer();
+    const ctx = makeHostContext(webServer, { responses: [textChunks("不该被调用")] });
+    host.apply(ctx, { samples: file });
+    const route = webServer.routes[0];
+
+    // 1) 字段全缺：kind 落 unknown，其余落 null（而不是 undefined / NaN）
+    const res1 = makeResponse();
+    await route.handler(makeRequest({ body: JSON.stringify({ feedback: {} }) }), res1);
+    assert.equal(res1.statusCode, 200);
+    assert.deepEqual(JSON.parse(res1.body), { ok: true });
+    const first = JSON.parse((await readFile(file, "utf8")).trim().split("\n")[0]);
+    assert.equal(first.kind, "unknown");
+    assert.equal(first.tier, null);
+    assert.equal(first.charsDelta, null);
+    assert.equal(first.elapsedMs, null);
+
+    // 2) feedback 不是对象：按"没有反馈"处理，继续走正常流程（无 text → 确定性拒绝）
+    const res2 = makeResponse();
+    await route.handler(makeRequest({ body: JSON.stringify({ feedback: "reverted" }) }), res2);
+    assert.equal(res2.statusCode, 200);
+    assert.equal(JSON.parse(res2.body).ok, false, "非对象 feedback 不得被当成反馈通道");
+    assert.equal(ctx.get("llm").seen.length, 0, "确定性拒绝不花模型调用");
+
+    // 3) 数值字段给了非数字：落 null（而不是让 NaN 经 JSON 变成 null 还被当成合法值）
+    const res3 = makeResponse();
+    await route.handler(makeRequest({ body: JSON.stringify({ feedback: { kind: "retried", charsDelta: "很多", elapsedMs: null } }) }), res3);
+    assert.equal(res3.statusCode, 200);
+    const lines = (await readFile(file, "utf8")).trim().split("\n");
+    const third = JSON.parse(lines[lines.length - 1]);
+    assert.equal(third.kind, "retried");
+    assert.equal(third.charsDelta, null);
+    assert.equal(third.elapsedMs, null);
+
+    // 4) 采样关闭：反馈仍然返回成功（采样是旁路，不是前置条件）
+    const webServer2 = makeWebServer();
+    const ctx2 = makeHostContext(webServer2, { responses: [textChunks("不该被调用")] });
+    host.apply(ctx2, { samples: false });
+    const res4 = makeResponse();
+    await webServer2.routes[0].handler(makeRequest({ body: JSON.stringify({ feedback: { kind: "submitted" } }) }), res4);
+    assert.equal(res4.statusCode, 200);
+    assert.deepEqual(JSON.parse(res4.body), { ok: true });
+    assert.equal(ctx2.get("llm").seen.length, 0);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
