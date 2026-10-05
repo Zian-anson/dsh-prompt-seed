@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/Zian-anson/dsh-prompt-seed)](https://github.com/Zian-anson/dsh-prompt-seed/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-2ea44f.svg)](https://github.com/topics/dsh-plugin)
-[![tests: 149 passing](https://img.shields.io/badge/tests-159%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 149 passing](https://img.shields.io/badge/tests-160%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
 一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件。输入一行种子草稿，
 点 **✦**，草稿原地改写成一个 agent 真正能执行的具体 prompt——**把你没写出来的中间细节展开**，
@@ -99,7 +99,7 @@ dsh --profile <name>
 | `src/host-plugin.js` | Cordis 宿主插件 → `lib/index.js` |
 | `src/client-plugin.js` | 浏览器半区工厂 → 包成 `lib/client.js` |
 | `tools/build.mjs` | 构建脚本：复制宿主半区、包裹浏览器半区 |
-| `test/optimizer.test.mjs` | 159 项单元/契约/路由测试 |
+| `test/optimizer.test.mjs` | 160 项单元/契约/路由测试 |
 | `docs/FEATURES.md` | 逐项实测核对的功能清单 |
 
 `src/` 是经过测试的唯一事实源；`lib/` 是构建产物（**有意提交**，DSH 直接从 lib 加载，CI 有漂移守卫），不要手改。
@@ -107,7 +107,7 @@ dsh --profile <name>
 ## 开发
 
 ```sh
-npm test        # 先构建 lib/ 再跑 159 项测试
+npm test        # 先构建 lib/ 再跑 160 项测试
 npm run build   # tools/build.mjs → lib/
 ```
 

@@ -3283,3 +3283,35 @@ test("T033 改后再点路径：回传 retried 并真的发起新一次优化", 
     h.restore();
   }
 });
+test("T034 事件日志字段与 FEATURES 声明一致（文档抽查转常驻守卫）", async () => {
+  const host = await import("../lib/index.js");
+  const dir = await mkdtemp(join(tmpdir(), "po-fields-"));
+  const file = join(dir, "samples.jsonl");
+  try {
+    const webServer = makeWebServer();
+    const ctx = makeHostContext(webServer, {
+      responses: [textChunks("请检查该模块的导出结构，并给出整理方案。"), textChunks("OK")],
+    });
+    host.apply(ctx, { samples: file });
+    const res = makeResponse();
+    // 用超长输入，顺带钉住 input 字段的截断长度
+    const long = "帮我把这个模块的导出结构梳理一遍，" + "补充说明。".repeat(100); // 517 字，必定触发 400 字截断
+    await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: long }) }), res);
+    assert.equal(res.statusCode, 200);
+    const record = JSON.parse((await readFile(file, "utf8")).trim().split("\n")[0]);
+
+    // 这份清单逐字来自 docs/FEATURES.md 模块 8 的"事件日志"行；改其一必须同改另一处。
+    const documented = [
+      "time", "event", "code", "tier", "mode", "depth", "gate", "repairs", "rechecked",
+      "violations", "inputChars", "outputChars", "ms", "input", "added", "provider", "model", "from",
+    ];
+    for (const key of documented) {
+      assert.ok(key in record, `FEATURES 声明的字段 ${key} 没有落盘（文档与实现已经不一致）`);
+    }
+    assert.equal(record.input.length, 400, "input 必须是前 400 字（SAMPLE_INPUT_PREVIEW）");
+    assert.ok(record.inputChars > 400, "inputChars 记录的是完整长度，不是截断后的长度");
+    assert.equal(record.event, "optimize");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
