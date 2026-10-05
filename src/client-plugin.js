@@ -99,7 +99,7 @@ const CSS = [
   '.dsh-seed-btn:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);}',
   '.dsh-seed-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary);outline-offset:1px;}',
   '.dsh-seed-btn:disabled{opacity:.4;cursor:not-allowed;}',
-  '.dsh-seed-btn[data-mode="revert"]{color:var(--dsw-alias-brand-primary);}',
+  '.dsh-seed-btn[data-mode="revert"]{width:auto;padding:0 7px;gap:4px;color:var(--dsw-alias-brand-primary);}',
   // 拒绝是"已保留原文"的安全结果，不是故障：用中性色，红色只留给真正的错误。
   '.dsh-seed-btn[data-mode="declined"]{color:var(--dsw-alias-label-secondary);}',
   '.dsh-seed-btn[data-mode="error"]{color:var(--dsw-alias-state-error-primary);}',
@@ -114,14 +114,16 @@ const CSS = [
   // 有内容但没点过时的呼吸微光：一眼看出这里有个可用的动作，不抢视线。
   '@keyframes dsh-opt-breathe{0%,100%{box-shadow:0 0 0 0 rgba(120,150,255,0);}50%{box-shadow:0 0 0 3px rgba(120,150,255,.16);}}',
   '.dsh-seed-btn[data-glow="1"]{animation:dsh-opt-breathe 2.8s ease-in-out infinite;}',
-  '.dsh-opt-group{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto;}',
+  '.dsh-opt-group{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto;}',
   '.dsh-opt-secondary{display:inline-flex;align-items:center;justify-content:center;',
-  'width:22px;height:22px;padding:0;border:none;border-radius:7px;background:transparent;',
+  'width:auto;min-width:28px;height:28px;padding:0 7px;gap:4px;border:none;border-radius:7px;background:transparent;',
   'color:var(--dsw-alias-label-secondary);cursor:pointer;flex:0 0 auto;',
+  'font-size:12px;line-height:1;font-weight:500;white-space:nowrap;',
   'transition:background .15s,color .15s;}',
   '.dsh-opt-secondary:hover:not(:disabled){background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);}',
   '.dsh-opt-secondary:disabled{opacity:.4;cursor:not-allowed;}',
-  '.dsh-opt-secondary svg{width:13px;height:13px;display:block;}',
+  '.dsh-opt-secondary svg{width:14px;height:14px;display:block;}',
+  '.dsh-opt-label{font-size:12px;line-height:1;font-weight:500;white-space:nowrap;}',
   // 闸门标记：✓ 已审判通过 / ⟳ 收敛过 / · 未审判（精确输入短路）。凭证必须可核对，
   // 所以它显示的是闸门判定结果，而不是长度——长度是别人也有的维度。
   '.dsh-opt-gate{margin-left:3px;font-size:9px;line-height:1;font-weight:700;',
@@ -566,6 +568,7 @@ function OptimizeButton(props) {
 
   const children = [icon];
   if (isRevertMode) {
+    children.push(React.createElement('span', { key: 'label', className: 'dsh-opt-label' }, '原文'));
     if (gateMark !== '') {
       children.push(React.createElement('span', { key: 'gate', className: 'dsh-opt-gate' }, gateMark));
     }
@@ -609,7 +612,10 @@ function OptimizeButton(props) {
         'aria-label': '再来一版',
         'data-testid': 'prompt-seed-regenerate',
       },
-      React.createElement(SparkIcon),
+      [
+        React.createElement(SparkIcon, { key: 'icon' }),
+        React.createElement('span', { key: 'label', className: 'dsh-opt-label' }, '再来'),
+      ],
     ));
     if (history.length > 1) {
       extras.push(React.createElement(
@@ -623,7 +629,10 @@ function OptimizeButton(props) {
           'aria-label': '回到上一版',
           'data-testid': 'prompt-seed-previous',
         },
-        React.createElement(PrevIcon),
+        [
+          React.createElement(PrevIcon, { key: 'icon' }),
+          React.createElement('span', { key: 'label', className: 'dsh-opt-label' }, '上一版'),
+        ],
       ));
     }
   }
