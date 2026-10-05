@@ -2859,3 +2859,46 @@ test("T022 驱动完整响应：cannot_infer 必须渲染成 declined 中性态�
     else globalThis.window = previousWindow;
   }
 });
+
+// --------------------------------------------------------------------------
+// T023：三个启发式在共享边界输入上的一致性
+// --------------------------------------------------------------------------
+
+test("T023 looksOpenEnded / looksSeedish 的边界与超集关系", () => {
+  const zh = (n) => "帮".repeat(n);
+  const cases = [
+    { text: "", openEnded: false, seedish: false, note: "空输入两者皆假" },
+    { text: "登录", openEnded: true, seedish: true, note: "2 字无锚定：下限刻意极低" },
+    { text: zh(40), openEnded: true, seedish: true, note: "40 字整：仍在短句阈值内" },
+    { text: zh(41), openEnded: false, seedish: true, note: "41 字：超出开放式阈值，但仍在种子阈值（60）内" },
+    { text: zh(60), openEnded: false, seedish: true, note: "60 字整：种子的上界" },
+    { text: zh(61), openEnded: false, seedish: false, note: "61 字无锚定：不再是种子" },
+    { text: "为什么这么说？", openEnded: true, seedish: true, note: "问句形态无视长度" },
+    { text: "把 src/a.js 改一下，跑一遍测试确认没破坏", openEnded: false, seedish: false, note: "带路径与扩展名：事实锚定即非种子" },
+    { text: "这个月 15 号之前能不能给个版本？", openEnded: true, seedish: true, note: "问句形态优先于数字锚定" },
+  ];
+  for (const c of cases) {
+    assert.equal(looksOpenEnded(c.text), c.openEnded, `looksOpenEnded(${JSON.stringify(c.text.slice(0, 12))}…) — ${c.note}`);
+    assert.equal(looksSeedish(c.text), c.seedish, `looksSeedish(${JSON.stringify(c.text.slice(0, 12))}…) — ${c.note}`);
+    if (looksOpenEnded(c.text)) {
+      assert.ok(looksSeedish(c.text), "开放式必须是种子的子集：开放 ⟹ 种子（否则 THIN 重试与补全闸会各判一套）");
+    }
+  }
+});
+
+test("T023 assessInflation 的边界：空输入不抛且比值有限；形态指标只告警不判定", () => {
+  assert.equal(assessInflation("", "").ratio, 0);
+  const long = assessInflation("", "x".repeat(10));
+  assert.ok(Number.isFinite(long.ratio) && long.ratio === 10, "空输入按长度 1 兜底，比值仍有限");
+  assert.equal(long.bloated, true, "空输入被算作膨胀——但管线在更早的确定性闸门就拦下了空输入，此处仅记录语义");
+  // 长输入不再算膨胀（阈值保护：长草稿本来就会更长大）
+  const big = "字".repeat(250);
+  assert.equal(assessInflation(big, big + "字".repeat(1000)).bloated, false, "超过 200 字的输入不参与膨胀告警");
+  // 开放式被闭合：判的是 OPEN_ENDED_PATTERN 与 DELIVERABLE_PATTERN 的**交集**，
+  // 不是 looksOpenEnded（后者还含问句形态）——用问句样本会得到 false，这个口径差异值得写明。
+  const closed = assessInflation("帮我看看这个模块的性能", "请检查该模块的性能，并输出一份性能对比表格与优化实施计划。");
+  assert.equal(closed.openEndedClosed, true, "开放式被闭合必须被标出（历史上的跑偏形态）");
+  assert.equal(closed.suspicious, true);
+  const questionOnly = assessInflation("这个能优化吗？", "请检查该模块并输出一份性能对比表格。");
+  assert.equal(questionOnly.openEndedClosed, false, "问句形态不在 OPEN_ENDED_PATTERN 内，故不触发闭合告警（判定口径与 looksOpenEnded 不同）");
+});
