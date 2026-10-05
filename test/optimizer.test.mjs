@@ -2356,3 +2356,54 @@ test("两个话轮提取器共用同一份文本转换（去重回归守卫）",
   assert.equal(extractRecentContext(userSurface)?.[0]?.text, "共享实现");
   assert.equal(extractAssistantTail(assistantSurface)?.text, "共享实现");
 });
+
+// --------------------------------------------------------------------------
+// T002：信号/短指令/会话三个契约的覆盖入口（此前不可达：键被读取但文件从不加载）
+// --------------------------------------------------------------------------
+
+import {
+  buildConversationalSystemPrompt,
+  buildDeicticSystemPrompt,
+  buildSignalSystemPrompt,
+} from "../src/prompt-templates.js";
+
+test("三个新契约的构建器读取各自的覆盖键", () => {
+  setTemplateOverrides({
+    signalSystem: "SIGNAL OVERRIDE",
+    deicticSystem: "DEICTIC OVERRIDE",
+    conversationalSystem: "CONVERSATIONAL OVERRIDE",
+  });
+  assert.ok(buildSignalSystemPrompt().startsWith("SIGNAL OVERRIDE"));
+  assert.ok(buildDeicticSystemPrompt().startsWith("DEICTIC OVERRIDE"));
+  assert.ok(buildDeicticSystemPrompt({ tightened: true }).startsWith("DEICTIC OVERRIDE"), "收紧后缀叠加在覆盖文本之后");
+  assert.ok(buildConversationalSystemPrompt().startsWith("CONVERSATIONAL OVERRIDE"));
+  assert.ok(buildConversationalSystemPrompt({ tightened: true }).startsWith("CONVERSATIONAL OVERRIDE"));
+  setTemplateOverrides(null);
+  assert.ok(buildSignalSystemPrompt().includes("You turn a bare signal"), "归还后回落内置");
+  assert.ok(buildConversationalSystemPrompt().includes("You tidy up a conversational message"));
+});
+
+test("T002 会话契约覆盖文件真的进入 system prompt（此前放文件完全无效）", async () => {
+  const host = await import("../lib/index.js");
+  const dir = await mkdtemp(join(tmpdir(), "po-conv-override-"));
+  const previous = process.env.DSH_HOME;
+  process.env.DSH_HOME = dir;
+  try {
+    const prompts = join(dir, "prompt-seed", "prompts");
+    await mkdir(prompts, { recursive: true });
+    await writeFile(join(prompts, "conversational.md"), "CONVERSATIONAL OVERRIDE CONTRACT", "utf8");
+    const llm = scriptedLlm([textChunks("这是怎么回事？")]);
+    const webServer = makeWebServer();
+    host.apply(makeHostContext(webServer, { llm }), { samples: false });
+    const res = makeResponse();
+    await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "这是怎么回事？" }) }), res);
+    assert.equal(res.statusCode, 200);
+    assert.equal(llm.seen.length, 1, "会话分支应产生一次调用");
+    assert.ok(llm.seen[0].system.startsWith("CONVERSATIONAL OVERRIDE CONTRACT"), "覆盖文件必须进入 system prompt");
+    setTemplateOverrides(null);
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+    await rm(dir, { recursive: true, force: true });
+  }
+});

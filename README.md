@@ -213,7 +213,8 @@ half is a compiled bundle, so the two must be changed together. A test asserts t
 **Depth** is a client-side setting (right-click the ✦ button): `auto` (from local feedback counts),
 `light`, `standard`, `deep`. It is not a row config key because it is per-user, not per-profile.
 
-**Prompt overrides**: drop `system.md`, `user.md` or `audit.md` into
+**Prompt overrides**: drop `system.md`, `user.md`, `audit.md`, `signal.md`, `deictic.md` or
+`conversational.md` into
 `$DSH_HOME/prompt-seed/prompts/` to replace the built-in contract. They are re-read **on every
 request**, so an edit takes effect on the next click — no app restart.
 
@@ -278,7 +279,7 @@ model access and credential handling stay exactly where they already are.
 | Result is longer/shorter than you want | depth setting | **right-click the ✦ button** to cycle `auto / light / standard / deep`; the choice is remembered |
 | Result was reverted automatically | the fidelity gate judged the rewrite would change your meaning | hover the shield — the tooltip names the violation class; the eye button lets you view the rejected draft anyway |
 | Output keeps getting rejected | the model is weak at instruction-following | point the row at a stronger model (`provider` + `model`) |
-| You edited the prompts but nothing changed | override files must be at `$DSH_HOME/prompt-seed/prompts/` (`system.md`, `user.md`, `audit.md`) | files are re-read on every request, so a correct path takes effect on the next click |
+| You edited the prompts but nothing changed | override files must be at `$DSH_HOME/prompt-seed/prompts/` — `system.md`, `user.md`, `audit.md` for the three main contracts, `signal.md`, `deictic.md`, `conversational.md` for the 0.9.x branches | files are re-read on every request, so a correct path takes effect on the next click |
 | **You upgraded the plugin but behaviour is unchanged** | the host half is an ES module, and **Node's module cache is keyed by URL** — reinstalling the same package name lands on the same path, so the running process keeps executing the module it already loaded | **restart the app.** Then confirm with `curl -s -X POST 'http://127.0.0.1:19387/api/prompt-seed/optimize?debug=1' -H 'content-type: application/json' --data '{"text":"hi"}'` and check `_debug.codeVersion` |
 
 That last row is worth internalising, and it was measured rather than assumed:

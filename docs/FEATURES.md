@@ -111,6 +111,7 @@
 | 功能 | 入口 | 状态 |
 |---|---|---|
 | **覆盖 system/user/audit** | 放 `$DSH_HOME/prompt-seed/prompts/{system,user,audit}.md` | ✅ 线上决定性验证（覆盖文件里的标记串出现在输出里） |
+| **覆盖 signal/deictic/conversational** | 放同名 `{signal,deictic,conversational}.md`（0.9.2 修复：此前键被读取但文件从不加载，放文件完全无效） | ✅ 单测（构建器读取 + 路由端到端进入 system prompt） |
 | **改完立刻生效** | 每次请求重读，**不需要重启** | ✅ 单测（改文件 → 下次请求生效） |
 | **缺失回落内置** | 文件不存在即用内置模板 | ✅ 单测 |
 | **不可读时告警** | 非 ENOENT 错误会打日志（曾因吞异常藏住真 bug） | ✅ 单测 |
