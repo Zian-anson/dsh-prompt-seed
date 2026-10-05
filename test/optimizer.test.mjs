@@ -3108,3 +3108,36 @@ test("T030 反馈分支的退化输入：字段缺失、非对象、非数值都
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("T031 busy 期间再点一次 = 取消：不发第二次请求，旧响应被丢弃", async () => {
+  let release;
+  const pending = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const h = await makeClientHarness({
+    draft: "帮我改一下这个模块",
+    fetchImpl: () => {
+      calls += 1;
+      return pending.then(() => ({
+        json: () => Promise.resolve({ ok: true, text: "请检查该模块的导出结构，并给出整理方案。" }),
+      }));
+    },
+  });
+  try {
+    h.tree.props.onClick();
+    await h.settle();
+    assert.equal(h.tree.props["data-mode"], "busy", "第一次点击进入 busy");
+
+    // 第二次点击是"取消"，不是"再发一次"
+    h.tree.props.onClick();
+    await h.settle();
+    assert.equal(h.tree.props["data-mode"], "idle", "取消后立刻回到 idle（用户看得到反馈）");
+    assert.equal(calls, 1, "取消不得再发一次请求——否则就是两次扣费");
+
+    release();
+    await h.settle();
+    assert.deepEqual(h.writes, [], "被取消的响应绝不能写回");
+    assert.equal(h.tree.props["data-mode"], "idle", "旧响应到达后也不得把状态拉回 busy/revert");
+  } finally {
+    h.restore();
+  }
+});
