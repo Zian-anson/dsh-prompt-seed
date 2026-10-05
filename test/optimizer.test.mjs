@@ -2407,3 +2407,47 @@ test("T002 会话契约覆盖文件真的进入 system prompt（此前放文件�
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// --------------------------------------------------------------------------
+// T004：sample-log 未覆盖边界
+// --------------------------------------------------------------------------
+
+test("T004 sample-log 边界：非字符串 input、不可写目标", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "po-samples-edge-"));
+  try {
+    const file = join(dir, "nested", "s.jsonl");
+    // 缺 input 字段：仍要写成功，input 落空串，其余字段原样保留
+    assert.equal(await appendSample(file, { time: "t", code: "ok" }), true);
+    let record = JSON.parse((await readFile(file, "utf8")).trim());
+    assert.equal(record.input, "", "缺 input 字段时落空串");
+    assert.equal(record.code, "ok", "其余字段不能被丢");
+
+    // number 型 input：同样落空串而不是抛
+    assert.equal(await appendSample(file, { input: 42 }), true);
+    const last = JSON.parse((await readFile(file, "utf8")).trim().split("\n").pop());
+    assert.equal(last.input, "", "number 型 input 落空串");
+
+    // 目标是已存在的目录：写入必然失败，必须静默返回 false
+    const asDir = join(dir, "adir");
+    await mkdir(asDir, { recursive: true });
+    assert.equal(await appendSample(asDir, { input: "x" }), false, "目标是目录时静默失败");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("T004 resolveSamplePath 退化：空白 DSH_HOME 回落 homedir，非路径值走默认", () => {
+  const previous = process.env.DSH_HOME;
+  try {
+    process.env.DSH_HOME = "   ";
+    const fallback = resolveSamplePath(undefined);
+    assert.ok(fallback.endsWith(join(".dsh", "prompt-seed", "samples.jsonl")), "空白 DSH_HOME 必须回落 homedir");
+    assert.equal(resolveSamplePath(true), fallback, "true 不是自定义路径");
+    assert.equal(resolveSamplePath(""), fallback, "空串不是自定义路径");
+    assert.equal(resolveSamplePath("  "), fallback, "空白串不是自定义路径");
+    assert.equal(resolveSamplePath("/x/y.jsonl"), "/x/y.jsonl", "自定义路径原样返回");
+  } finally {
+    if (previous === undefined) delete process.env.DSH_HOME;
+    else process.env.DSH_HOME = previous;
+  }
+});
