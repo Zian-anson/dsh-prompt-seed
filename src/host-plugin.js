@@ -374,6 +374,11 @@ export function apply(ctx, config = {}) {
           }
 
           const contextBundle = await readContext(sessionId, text);
+          // 提到变量：0.9.0 把上下文改成 { context, assistantTail } 之后，
+          // 下列调用改用了 contextBundle?.context，但 ?debug=1 的统计块仍在引用
+          // 已不存在的 context —— 调试端点在 0.9.0 起每次调用都抛 ReferenceError。
+          // 线上没有探针断言过它，直到 T013 的路由测试把它撞出来。
+          const context = contextBundle?.context;
           const callRoute = resolveCallRoute();
           setTemplateOverrides(await readTemplateOverrides());
           const startedAt = Date.now();
@@ -381,7 +386,7 @@ export function apply(ctx, config = {}) {
             llm: ctx.get("llm"),
             route: callRoute,
             text,
-            context: contextBundle?.context,
+            context,
             assistantTail: contextBundle?.assistantTail,
             depth: depthOf(body),
             log,

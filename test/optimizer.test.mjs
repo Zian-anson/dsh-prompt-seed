@@ -2593,3 +2593,54 @@ test("T012 每个错误码都有面向用户的中文文案，且没有孤儿文
   }
   assert.ok(codes.length >= 12, "错误码数量骤降说明有码被误删");
 });
+
+// --------------------------------------------------------------------------
+// T013：debug 路由字段与不变量
+// --------------------------------------------------------------------------
+
+test("T013 ?debug=1 附带形状而非上下文原文；开关关闭时不出现", async () => {
+  const host = await import("../lib/index.js");
+  const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  const webServer = makeWebServer();
+  const surfaceText = "上一轮说的是把接口的限流参数调大";
+  const llm = scriptedLlm([textChunks("请把那个接口的限流参数调整一下。"), textChunks("OK")]);
+  host.apply(
+    makeHostContext(webServer, {
+      llm,
+      sessionQuery: {
+        readSurface: () =>
+          Promise.resolve({
+            events: [
+              { type: "user/message", data: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: surfaceText }] } },
+            ],
+          }),
+      },
+    }),
+    { samples: false },
+  );
+  const route = webServer.routes[0];
+
+  const req = makeRequest({ body: JSON.stringify({ text: "把那个接口改一下", sessionId: "s-dbg" }) });
+  req.url = "/?debug=1";
+  const res = makeResponse();
+  await route.handler(req, res);
+  assert.equal(res.statusCode, 200);
+  const body = JSON.parse(res.body);
+  assert.ok(body._debug, "?debug=1 必须附带 _debug");
+  assert.equal(body._debug.codeVersion, pkg.version, "codeVersion 必须等于当前包版本（排障第一证据）");
+  assert.equal(body._debug.sessionId, "s-dbg");
+  assert.equal(body._debug.contextMessages, 1, "上下文条数按形状统计");
+  assert.equal(body._debug.contextChars, surfaceText.length, "上下文字符数按形状统计");
+  assert.equal(body._debug.provider, "p");
+  assert.equal(body._debug.model, "m");
+  assert.equal(body._debug.samplePath, null, "samples:false 时路径为空");
+  assert.ok(
+    !JSON.stringify(body._debug).includes(surfaceText),
+    "调试字段只带形状，绝不带上下文原文（回环限定也不等于可以泄露草稿内容）",
+  );
+
+  const req2 = makeRequest({ body: JSON.stringify({ text: "把那个接口改一下", sessionId: "s-dbg" }) });
+  const res2 = makeResponse();
+  await route.handler(req2, res2);
+  assert.equal(JSON.parse(res2.body)._debug, undefined, "未开开关时不得出现调试字段");
+});
