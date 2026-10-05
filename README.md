@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/Zian-anson/dsh-prompt-seed)](https://github.com/Zian-anson/dsh-prompt-seed/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-2ea44f.svg)](https://github.com/topics/dsh-plugin)
-[![tests: 136 passing](https://img.shields.io/badge/tests-136%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 149 passing](https://img.shields.io/badge/tests-149%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin. Type a one-line
 draft, click **✦**, and it is rewritten in place into a prompt an agent can actually act on —
@@ -75,7 +75,7 @@ Install the released tarball (works today, pinned by version):
 
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.2/dsh-prompt-seed-0.9.2.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.3/dsh-prompt-seed-0.9.3.tgz
 ```
 
 The npm channel lights up once the package is published there:
@@ -300,7 +300,7 @@ just installed.
 ## Development
 
 ```sh
-npm test        # builds lib/ then runs 136 tests
+npm test        # builds lib/ then runs 149 tests
 npm run build   # tools/build.mjs → lib/
 ```
 

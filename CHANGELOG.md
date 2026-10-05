@@ -9,6 +9,8 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-05
+
 ### Fixed
 
 - **The signal, short-directive and conversational template overrides now load.** The contracts
