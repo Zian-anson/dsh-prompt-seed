@@ -2669,7 +2669,7 @@ test("T015 五状态优先级链与各态呈现约束", async () => {
     "错误态必须用 error 色",
   );
   assert.ok(
-    source.includes('.dsh-seed-btn[data-mode="revert"]{color:var(--dsw-alias-brand-primary);}'),
+    /\.dsh-seed-btn\[data-mode="revert"\]\{[^}]*color:var\(--dsw-alias-brand-primary\);[^}]*\}/.test(source),
     "可恢复态必须用品牌色",
   );
   assert.ok(
