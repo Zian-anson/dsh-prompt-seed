@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/Zian-anson/dsh-prompt-seed)](https://github.com/Zian-anson/dsh-prompt-seed/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-2ea44f.svg)](https://github.com/topics/dsh-plugin)
-[![tests: 149 passing](https://img.shields.io/badge/tests-162%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 162 passing](https://img.shields.io/badge/tests-162%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin. Type a one-line
 draft, click **✦**, and it is rewritten in place into a prompt an agent can actually act on —
@@ -151,7 +151,7 @@ Two halves, one package:
 ┌─ Browser ────────────────────────────────────────────────┐
 │ lib/client.js   __ModuleLoader__ bundle                  │
 │   slots.register('conversation.input.right', …)          │
-│   4 states: ✨ idle / ⟳ busy / ↺ revert / ⚠ error         │
+│   5 states: ✦ idle / ⟳ busy / ↺ revert / 🛡 declined / ⚠ error         │
 │   undo backup + draftRev CAS + divergence detection      │
 └──────────────────────┬───────────────────────────────────┘
                        │  POST /api/prompt-seed/optimize  { text }
@@ -231,8 +231,10 @@ half is a compiled bundle, so the two must be changed together. A test asserts t
 `$DSH_HOME/prompt-seed/prompts/` to replace the built-in contract. They are re-read **on every
 request**, so an edit takes effect on the next click — no app restart.
 
-**Context injection** sends the session's most recent user/assistant messages (≤4 messages,
-≤300 chars each) to the rewrite and audit prompts as a reference-resolution-only block.
+**Context injection** sends the session's **two most recent user turns** (each truncated to
+300 characters) to the rewrite and audit prompts as a reference-resolution-only block. The
+last assistant turn is read only to anchor bare-signal inference ("42" → which option?) and is
+never sent to the rewrite or audit prompts.
 It fails open at every step — no session id, no `sessionQuery` service, corrupt reads, or
 `context: false` all degrade silently to context-free optimization.
 
@@ -252,13 +254,14 @@ The route always answers `200` for business outcomes and puts the outcome in the
 | `code` | Cause | User-facing message (the UI ships Chinese strings today; English meaning below) |
 |---|---|---|
 | `empty_input` | draft is blank | Type something first. |
-| `input_too_long` | over 8000 characters | Too long — trim it and try again. |
+| `input_too_long` | over 8000 characters | Too long — trim it and try again (a neutral hint, not a failure). |
 | `llm_unavailable` | `llm` service not mounted | Model service unavailable. |
 | `model_unavailable` | no default model | No usable default model. |
 | `llm_error` | call threw, or `finish` was `error`/`aborted` | Model call failed. |
 | `empty_result` | empty after normalization | The model returned nothing usable. |
 | `truncated` | `finish.kind === 'max-tokens'` | Result was truncated — shorten the input and retry. |
 | `nothing_to_optimize` | input is a bare greeting / punctuation only | Too short — nothing to optimize (a neutral hint, not a failure). |
+| `cannot_infer` | a bare signal with no anchor in the conversation | Cannot tell what this refers to — write out what you mean (zero model calls; a neutral refusal, never a guess). |
 | `fidelity_rejected` | rewrite and targeted repair both distort the request | The rewrite would change your meaning; your text was kept (the tooltip appends the `added` list: what the audit flagged). |
 | `forbidden` | non-loopback peer or Host | — (403) |
 
@@ -290,7 +293,7 @@ model access and credential handling stay exactly where they already are.
 | Click does nothing | the route is not registered | check the host log for the `[prompt-seed] loaded` banner; confirm `--dump-config` shows the row |
 | "Model service unavailable" / "No usable default model" | host `llm` or `agentDefaultModel` not mounted | configure a session model, or set `provider` + `model` in the row config |
 | Result is longer/shorter than you want | depth setting | **right-click the ✦ button** to cycle `auto / light / standard / deep`; the choice is remembered |
-| Result was reverted automatically | the fidelity gate judged the rewrite would change your meaning | hover the shield — the tooltip names the violation class; the eye button lets you view the rejected draft anyway |
+| The rewrite was not applied (shield 🛡) | the fidelity gate judged the rewrite would change your meaning — nothing is written back, your text is untouched | hover the shield — the tooltip names the violation class; the eye button lets you view the rejected draft anyway |
 | Output keeps getting rejected | the model is weak at instruction-following | point the row at a stronger model (`provider` + `model`) |
 | You edited the prompts but nothing changed | override files must be at `$DSH_HOME/prompt-seed/prompts/` — `system.md`, `user.md`, `audit.md` for the three main contracts, `signal.md`, `deictic.md`, `conversational.md` for the 0.9.x branches | files are re-read on every request, so a correct path takes effect on the next click |
 | **You upgraded the plugin but behaviour is unchanged** | the host half is an ES module, and **Node's module cache is keyed by URL** — reinstalling the same package name lands on the same path, so the running process keeps executing the module it already loaded | **restart the app.** Then confirm with `curl -s -X POST 'http://127.0.0.1:19387/api/prompt-seed/optimize?debug=1' -H 'content-type: application/json' --data '{"text":"hi"}'` and check `_debug.codeVersion` |
@@ -336,7 +339,7 @@ Test a local checkout without publishing:
 
 ```sh
 npm pack --pack-destination /tmp
-dsh plugin --profile plugin-lab add /tmp/dsh-prompt-seed-0.9.0.tgz
+dsh plugin --profile plugin-lab add /tmp/dsh-prompt-seed-$(node -p "require('./package.json').version").tgz
 dsh --profile plugin-lab --dump-config
 ```
 
