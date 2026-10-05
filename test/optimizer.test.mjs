@@ -2519,3 +2519,24 @@ test("T006 cannot_infer 在客户端走 declined 中性态，不是红色错误�
   // 兜底仍在：未知码必须还能报错，而不是静默吞掉
   assert.ok(source.includes("setError((res && res.error) || '优化失败')"), "未知码兜底必须保留");
 });
+
+// --------------------------------------------------------------------------
+// T009：目录就绪缓存（性能）与其失效路径
+// --------------------------------------------------------------------------
+
+test("T009 目录缓存：目录被外部删除后，下一次写入必须自愈", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "po-dircache-"));
+  const dir = join(parent, "nested");
+  const file = join(dir, "s.jsonl");
+  try {
+    assert.equal(await appendSample(file, { input: "第一次" }), true, "首次写入须自建目录");
+    // 目录被外部删除（进程内缓存仍记着它已就绪）
+    await rm(dir, { recursive: true, force: true });
+    assert.equal(await appendSample(file, { input: "第二次" }), true, "缓存失效后必须重建目录并写入");
+    const lines = (await readFile(file, "utf8")).trim().split("\n");
+    assert.equal(lines.length, 1, "旧目录已删，只剩重建后的这一条");
+    assert.equal(JSON.parse(lines[0]).input, "第二次");
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});

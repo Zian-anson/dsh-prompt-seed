@@ -22,6 +22,16 @@ import { dirname, join } from "node:path";
 const INPUT_LIMIT = 4000;
 
 /**
+ * 已经确认存在的目录（进程内记忆）。
+ *
+ * mkdir(recursive) 对已存在的目录是必然成功的空操作，但每次调用仍要走一遍路径
+ * 解析与系统调用；采样发生在每次优化的收尾路径上，没必要为此付费。记一次即可。
+ * 唯一要防的是"目录后来被外部删掉"——写入失败时失效该条目，下一次调用会重建
+ * （见 catch 分支），行为与未缓存时一致。
+ */
+const readyDirs = new Set();
+
+/**
  * 解析样本文件路径。
  * @param {string | boolean | undefined} configured 行配置 `samples`：字符串为自定义路径，false 关闭。
  * @returns {string | null} 文件路径；null 表示关闭。
@@ -44,12 +54,29 @@ export function resolveSamplePath(configured) {
  */
 export async function appendSample(file, record) {
   if (typeof file !== "string" || file === "") return false;
+  const dir = dirname(file);
+  const input = typeof record?.input === "string" ? record.input.slice(0, INPUT_LIMIT) : "";
+  const line = `${JSON.stringify({ ...record, input })}\n`;
+  const write = async () => {
+    if (!readyDirs.has(dir)) {
+      await mkdir(dir, { recursive: true });
+      readyDirs.add(dir);
+    }
+    await appendFile(file, line, "utf8");
+  };
   try {
-    await mkdir(dirname(file), { recursive: true });
-    const input = typeof record?.input === "string" ? record.input.slice(0, INPUT_LIMIT) : "";
-    await appendFile(file, `${JSON.stringify({ ...record, input })}\n`, "utf8");
+    await write();
     return true;
   } catch {
-    return false;
+    // 第一次失败最可能的成因是缓存里的目录已被外部删除：失效缓存并在同一次
+    // 调用内重试一次。采样是旁路，一次重试的成本远低于丢掉一条样本——
+    // 而这正是"缓存目录"若不处理会引入的新失败模式。
+    readyDirs.delete(dir);
+    try {
+      await write();
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
