@@ -59,7 +59,7 @@ never adds anything, one of the conservative ones will suit you better.
 |---|---|
 | Host | `dsh >=0.2.0-rc.1 <0.3.0-0` (declared as `engines.dsh`); tested on `0.2.0-rc.2` |
 | Node | `>=22.19` (matches the host's own requirement) |
-| Runtime dependencies | **none** — the package is 5 ES modules, no build toolchain needed to install |
+| Runtime dependencies | **none** — the package ships six host modules plus the entry and one browser bundle, no build toolchain needed to install |
 
 DSH is in developer preview and its README warns of breaking changes, so this plugin declares a
 range and **disables itself instead of breaking the host's boot** when a seam is missing: if the

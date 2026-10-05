@@ -16,9 +16,16 @@ Worth knowing before you assess a report:
 - **It opens exactly one HTTP route**, `POST /api/prompt-seed/optimize`, and only on loopback. The
   handler checks the peer socket address **and** the `Host` header, so a page performing DNS
   rebinding cannot reach it. Business outcomes are returned as `200` with the outcome in the body;
-  only a non-loopback caller gets `403`.
+  only a non-loopback caller gets `403`. The `?debug=1` switch adds internal **shape** only —
+  `codeVersion`, counts, the resolved provider/model, the sample path — never the draft and never the
+  context text (asserted in the suite).
 - **It reads session history** through the host's `sessionQuery.readSurface`, on demand, and uses it
   only to resolve references.
+- **It reads up to six local override files** from `$DSH_HOME/prompt-seed/prompts/` —
+  `system.md`, `user.md`, `audit.md`, `signal.md`, `deictic.md`, `conversational.md` — re-reading them
+  on every request. Their content **becomes the instruction sent to the model**, so whatever can write
+  to that directory can steer the plugin; treat it as part of your own configuration surface, and
+  `templates: false` turns the whole layer off.
 - **It writes one local file**, `$DSH_HOME/prompt-seed/samples.jsonl`, appending the outcome of each
   run plus the first 400 characters of the input. `samples: false` disables it.
 - **The browser half stores four counters** in `localStorage` for depth adaptation. Nothing is

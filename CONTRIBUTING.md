@@ -11,8 +11,8 @@ cd dsh-prompt-seed
 npm test        # builds lib/ from src/, then runs the test suite
 ```
 
-There are **no dependencies to install** — the package is four ES modules plus a build script, all
-using Node built-ins.
+There are **no dependencies to install** — the package ships six host modules plus the plugin entry
+and one browser bundle, all using Node built-ins.
 
 ## Ground rules
 
