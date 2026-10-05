@@ -225,15 +225,15 @@ developer preview and moves quickly. Patch bumps will not break anything.
 - Elaboration contract: unfold the intermediate detail a request entails, invent nothing beyond it.
   Seeds are expanded 10–25×; already-precise instructions are left alone.
 
-[Unreleased]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.7...HEAD
-[0.8.7]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.6...v0.8.7
-[0.8.6]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.5...v0.8.6
-[0.8.5]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.4...v0.8.5
-[0.8.4]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.3...v0.8.4
-[0.8.3]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.2...v0.8.3
-[0.8.2]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.1...v0.8.2
-[0.8.1]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.8.0...v0.8.1
-[0.8.0]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.7.1...v0.8.0
-[0.7.1]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.7.0...v0.7.1
-[0.7.0]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/releases/tag/v0.6.0
+[Unreleased]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.7...HEAD
+[0.8.7]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.6...v0.8.7
+[0.8.6]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.5...v0.8.6
+[0.8.5]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.4...v0.8.5
+[0.8.4]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.3...v0.8.4
+[0.8.3]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.2...v0.8.3
+[0.8.2]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.1...v0.8.2
+[0.8.1]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.7.1...v0.8.0
+[0.7.1]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/Zian-anson/dsh-prompt-seed/releases/tag/v0.6.0

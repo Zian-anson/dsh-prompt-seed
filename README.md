@@ -1,5 +1,7 @@
 # dsh-prompt-seed
 
+**English** | [简体中文](README.zh-CN.md)
+
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin. Type a one-line
 draft, click **✦**, and it is rewritten in place into a prompt an agent can actually act on —
 **unfolding the intermediate detail you did not write down**, while a semantic fidelity gate makes
@@ -48,7 +50,7 @@ never adds anything, one of the conservative ones will suit you better.
 |---|---|
 | Host | `dsh >=0.2.0-rc.1 <0.3.0-0` (declared as `engines.dsh`); tested on `0.2.0-rc.2` |
 | Node | `>=22.19` (matches the host's own requirement) |
-| Runtime dependencies | **none** — the package is 4 ES modules, no build toolchain needed to install |
+| Runtime dependencies | **none** — the package is 5 ES modules, no build toolchain needed to install |
 
 DSH is in developer preview and its README warns of breaking changes, so this plugin declares a
 range and **disables itself instead of breaking the host's boot** when a seam is missing: if the
@@ -82,6 +84,33 @@ with `dsh plugin --profile <name> remove dsh-prompt-seed`.
 4. Not quite right? **✦** next to it generates another version; **‹** steps back to the previous one.
 5. **↺** restores your original. Editing the draft yourself also clears the undo — the plugin never
    overwrites what you have since typed.
+
+## Signals and short directives (0.9.0)
+
+Two input shapes that the elaboration contract was never designed for get dedicated semantics:
+
+**A bare signal** — a number like 42, or a go-ahead like 继续 — carries no task content. Its only
+meaning is: continue with what the conversation left pending. So it is resolved against an anchor
+(the latest assistant turn plus the latest user turn) in a fixed priority order, and **refused
+honestly when nothing matches**:
+
+| Anchor found in context | Inference | Example |
+|---|---|---|
+| an option list the number matches | **choice** | 1 + 「要不要继续？1. 继续梳理 2. 先停」→ 继续梳理 |
+| a question the assistant left pending | **answer** | 15 + 「这个月几号发布？」→ 15 号发布 |
+| the user's own unanswered question / a continuation offer | **continue** | 继续 → 放行提议的动作 |
+| nothing matches | **cannot_infer, zero model calls** | 42 against options 1/2 is a deterministic refusal — never a guess |
+
+**A short directive** — 改一下 / 不对 / 换一个 — has a clear verb and a missing object. Expansion
+runs inside a **degree contract**: the referent must come from context; divergence is allowed only
+inside the natural sub-parts of the user's own verb and its implied follow-ups; new goals, tools,
+numbers, or scope are forbidden; the verb must survive verbatim; the output is hard-capped at 180
+characters, with one tightened retry before rejection. An unresolvable referent is reported, not
+invented (「无法确定指代对象」→ cannot_infer).
+
+Measured against the live model — 改一下 in a button-color context expands to 「刚才那个按钮改成的
+红色我不太满意，再改一下，先给我两三个候选颜色对比着看。」(37 chars, verb preserved, nothing
+invented), while 42 with mismatched options refuses in 0 calls.
 
 ## How it works
 
@@ -252,7 +281,7 @@ just installed.
 ## Development
 
 ```sh
-npm test        # builds lib/ then runs 101 tests
+npm test        # builds lib/ then runs 120 tests
 npm run build   # tools/build.mjs → lib/
 ```
 
@@ -261,7 +290,10 @@ Source layout:
 | Path | Role |
 |---|---|
 | `src/prompt-templates.js` | the meta-prompt asset, output normalization, input validation |
-| `src/host-core.js` | route resolution, `llm.stream` consumption, error normalization |
+| `src/host-core.js` | route resolution, `llm.stream` consumption, error normalization, signal/deictic branches |
+| `src/signal-inference.js` | deterministic classification, anchor inference, degree checks for signals and short directives |
+| `src/session-context.js` | on-demand extraction of recent user turns from the session surface |
+| `src/sample-log.js` | the local event log (samples.jsonl) |
 | `src/host-plugin.js` | Cordis host plugin → `lib/index.js` |
 | `src/client-plugin.js` | browser factory body → wrapped into `lib/client.js` |
 | `tools/build.mjs` | copies the host half, wraps the browser half |
@@ -272,7 +304,7 @@ Test a local checkout without publishing:
 
 ```sh
 npm pack --pack-destination /tmp
-dsh plugin --profile plugin-lab add /tmp/dsh-prompt-seed-0.3.0.tgz
+dsh plugin --profile plugin-lab add /tmp/dsh-prompt-seed-0.9.0.tgz
 dsh --profile plugin-lab --dump-config
 ```
 

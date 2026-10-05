@@ -53,10 +53,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed.git"
+    "url": "git+https://github.com/Zian-anson/dsh-prompt-seed.git"
   },
-  "homepage": "https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed#readme",
+  "homepage": "https://github.com/Zian-anson/dsh-prompt-seed#readme",
   "bugs": {
-    "url": "https://github.com/REPLACE-WITH-YOUR-GITHUB-USER/dsh-prompt-seed/issues"
+    "url": "https://github.com/Zian-anson/dsh-prompt-seed/issues"
   }
 }
