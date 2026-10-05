@@ -9,6 +9,24 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The signal, short-directive and conversational template overrides now load.** The contracts
+  have always read `signalSystem` / `deicticSystem` / `conversationalSystem` from the override
+  layer, but the host half only loaded `system.md`, `user.md` and `audit.md` — so dropping
+  `signal.md`, `deictic.md` or `conversational.md` into `$DSH_HOME/prompt-seed/prompts/` had no
+  effect at all. An unreachable configuration path is worse than a missing one: the docs said it
+  worked. All six files are read now, re-read per request as before.
+- **A refusal to infer no longer looks like a crash.** `cannot_infer` — returned when a bare
+  signal (a number, a go-ahead) has no anchor in the conversation — was falling through to the red
+  error state. It now shares the neutral declined state with `nothing_to_optimize`, because
+  declining to guess an intent is the system working as designed.
+
+### Changed
+
+- The sample log no longer re-creates its directory on every run (a process-local cache, with a
+  single invalidate-and-retry if the directory disappears underneath it). Internal.
+
 ## [0.9.2] - 2026-10-05
 
 ### Documentation
