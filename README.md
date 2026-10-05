@@ -65,8 +65,17 @@ During `0.x`, **minor version bumps may contain breaking changes** (SemVer §4);
 
 ## Install
 
+Install the released tarball (works today, pinned by version):
+
 ```sh
-dsh plugin --profile <name> add dsh-prompt-seed
+dsh plugin --profile <name> add \
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.1/dsh-prompt-seed-0.9.1.tgz
+```
+
+The npm channel lights up once the package is published there:
+
+```sh
+dsh plugin --profile <name> add dsh-prompt-seed   # npm, pending publication
 ```
 
 Verify the bundle and row landed before booting:

@@ -42,8 +42,17 @@
 
 ## 安装
 
+安装已发布的 tarball（当前唯一可用通道，按版本钉住）：
+
 ```sh
-dsh plugin --profile <name> add dsh-prompt-seed
+dsh plugin --profile <name> add \
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.1/dsh-prompt-seed-0.9.1.tgz
+```
+
+发布到 npm 后，这条命令同样可用：
+
+```sh
+dsh plugin --profile <name> add dsh-prompt-seed   # npm 通道，待发布
 ```
 
 验证后再启动：
