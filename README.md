@@ -22,10 +22,13 @@ a quality level or a target size; show a before/after comparison of file size an
 sharpness; compress several images in one batch and download them as one archive.
 Keep the page responsive on large images, keep transparent pngs transparent, say
 so when a format is unsupported, and keep the original when a compression fails.
-        │  written in place, button becomes ↺
+        │  written in place
         │  (credential: fidelity ✓ · +178 chars · filled in: formats, quality, edge cases)
         ▼
-one-click revert · ✦ regenerate another version · ‹ step back a version
+↺ original · ✦ regenerate
+        │  after generating another version
+        ▼
+↺ original · ✦ regenerate · ‹ previous version
 ```
 
 ## Why this one
