@@ -2,6 +2,12 @@
 
 [English](README.md) | **简体中文**
 
+[![CI](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml/badge.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/Zian-anson/dsh-prompt-seed)](https://github.com/Zian-anson/dsh-prompt-seed/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-2ea44f.svg)](https://github.com/topics/dsh-plugin)
+[![tests: 127 passing](https://img.shields.io/badge/tests-127%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+
 一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件。输入一行种子草稿，
 点 **✦**，草稿原地改写成一个 agent 真正能执行的具体 prompt——**把你没写出来的中间细节展开**，
 同时由语义保真闸门保证意思和语气不走样。点 **↺** 一键恢复原文。
@@ -46,7 +52,7 @@
 
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.1/dsh-prompt-seed-0.9.1.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.2/dsh-prompt-seed-0.9.2.tgz
 ```
 
 发布到 npm 后，这条命令同样可用：

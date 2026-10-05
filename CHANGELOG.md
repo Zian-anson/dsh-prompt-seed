@@ -9,6 +9,8 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-05
+
 ### Documentation
 
 - **The English README is English again.** Examples, credentials, error messages, and config
@@ -19,6 +21,17 @@ developer preview and moves quickly. Patch bumps will not break anything.
   states the English meaning and notes that the UI strings themselves are Chinese-only today
   (Known limitation #2). CHANGELOG quotes were translated the same way, keeping the facts
   (call counts, ratios, fallbacks) intact.
+- **Install instructions lead with a channel that exists.** The README's first command was
+  `dsh plugin add dsh-prompt-seed` — the npm channel, which is not published yet, so the documented
+  first step could not work. Both READMEs now lead with the released tarball URL (verified: installs
+  in ~6 s) and list the npm form as pending publication.
+
+### Added
+
+- **Community files for a public repository**: `CODE_OF_CONDUCT.md` (Contributor Covenant 2.1,
+  with a working enforcement contact), GitHub topics (`dsh-plugin`, `deepseek-harness`, and five
+  more — the ecosystem's plugin indexes aggregate from the `dsh-plugin` topic), and refreshed issue
+  templates (current version placeholders). Repository community health: 100%.
 
 ## [0.9.1] - 2026-10-05
 
