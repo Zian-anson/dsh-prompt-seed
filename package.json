@@ -34,7 +34,8 @@
   ],
   "scripts": {
     "build": "node tools/build.mjs",
-    "test": "node tools/build.mjs && node --test test/*.test.mjs",
+    "check:docs": "node tools/check-doc-counts.mjs",
+    "test": "node tools/build.mjs && node tools/check-doc-counts.mjs && node --test test/*.test.mjs",
     "prepack": "node tools/build.mjs"
   },
   "publishConfig": {
