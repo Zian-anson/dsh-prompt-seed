@@ -20,10 +20,10 @@
 import { messageTextOf } from "./message-text.js";
 
 /** 信号类输出的软上限（字符）。 */
-export const SIGNAL_MAX_CHARS = 120;
+const SIGNAL_MAX_CHARS = 120;
 
 /** 短指令类输出的硬上限（字符）。 */
-export const DEICTIC_MAX_CHARS = 180;
+const DEICTIC_MAX_CHARS = 180;
 
 /** 模型端指代消解失败时的回执标记（host 检测后转为 cannot_infer）。 */
 export const DEICTIC_FALLBACK_MARKER = "[无法确定指代对象]";

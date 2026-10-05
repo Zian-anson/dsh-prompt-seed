@@ -113,7 +113,7 @@ function isLoopbackHost(value) {
  * @param {object} res 响应。
  * @returns {boolean} 是否放行。
  */
-export function guardLoopback(req, res) {
+function guardLoopback(req, res) {
   const peer = req.socket?.remoteAddress;
   if (!isLoopbackAddress(peer) || !isLoopbackHost(req.headers?.host)) {
     res.writeHead(403, { "content-type": "application/json; charset=utf-8" });
