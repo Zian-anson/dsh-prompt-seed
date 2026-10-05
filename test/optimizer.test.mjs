@@ -2839,8 +2839,19 @@ test("T023 assessInflation 的边界：空输入不抛且比值有限；形态�
  */
 async function makeClientHarness(options = {}) {
   const source = await readFile(join(root, "lib", "client.js"), "utf8");
+  // 注意：bundle 由 `new Function("window", source)` 注入，模块里的 window 指的是**传入的
+  // 那个对象**，不是 globalThis.window。localStorage 必须挂在同一个对象上，否则模块内
+  // 读到的永远是 undefined（readStored 静默回落 fallback）——这会悄悄让所有依赖本地
+  // 状态的断言退化到默认路径。
+  const storage = options.storage ?? {};
+  const fakeWindow = {
+    localStorage: {
+      getItem: (key) => (key in storage ? JSON.stringify(storage[key]) : null),
+      setItem(key, value) { storage[key] = JSON.parse(value); },
+    },
+  };
   let entry;
-  new Function("window", source)({ __ModuleLoader__: { load: (v) => { entry = v; } } });
+  new Function("window", source)(Object.assign(fakeWindow, { __ModuleLoader__: { load: (v) => { entry = v; } } }));
 
   const store = { hooks: [] };
   let cursor = 0;
@@ -2879,7 +2890,7 @@ async function makeClientHarness(options = {}) {
 
   const previousFetch = globalThis.fetch;
   const previousWindow = globalThis.window;
-  globalThis.window = { localStorage: { getItem: () => null, setItem() {} } };
+  globalThis.window = fakeWindow;
   globalThis.fetch = options.fetchImpl ?? (() => Promise.reject(new Error("harness: no fetch stub")));
 
   const client = { draft: options.draft ?? "", draftRev: 1, phase: "plain", occurrences: options.occurrences ?? [] };
@@ -3140,4 +3151,36 @@ test("T031 busy 期间再点一次 = 取消：不发第二次请求，旧响应�
   } finally {
     h.restore();
   }
+});
+
+test("T032 自适应深度：统计驱动的档位必须在渲染层可见", async () => {
+  const SIGNAL_KEY = "dsh-prompt-seed/signals";
+  const DEPTH_KEY = "dsh-prompt-seed/depth";
+  const titleFor = async (storage) => {
+    const h = await makeClientHarness({ draft: "帮我改一下这个模块", storage });
+    try {
+      return String(h.tree.props.title || "");
+    } finally {
+      h.restore();
+    }
+  };
+
+  // 补少了（retried 多于 reverted）→ 升档到深度
+  const deepTitle = await titleFor({ [SIGNAL_KEY]: { retried: 3, reverted: 0, submitted: 1 } });
+  assert.ok(deepTitle.includes("当前深度档"), "retried 占优应升到深度档，当前标题：" + deepTitle);
+  // 补多了（reverted 多于 submitted）→ 降档到轻
+  assert.ok((await titleFor({ [SIGNAL_KEY]: { reverted: 3, submitted: 0, retried: 0 } })).includes("当前轻档"), "reverted 占优应降到轻档");
+  // 冷启动保护：只点过一两次不得改变档位
+  assert.ok((await titleFor({ [SIGNAL_KEY]: { retried: 1, reverted: 0, submitted: 0 } })).includes("当前标准档"), "冷启动必须是标准档");
+  assert.ok((await titleFor({ [SIGNAL_KEY]: { reverted: 1, submitted: 0, retried: 0 } })).includes("当前标准档"), "冷启动的降档方向同样要拦住");
+  assert.ok((await titleFor({})).includes("当前标准档"), "没有任何统计时是标准档");
+
+  // 手动档位优先于统计（用户显式选过就不再自作主张）
+  const manual = await titleFor({ [DEPTH_KEY]: { mode: "light" }, [SIGNAL_KEY]: { retried: 9, reverted: 0, submitted: 0 } });
+  assert.ok(manual.includes("深度：轻"), "手动档位必须压过统计，当前：" + manual);
+  assert.ok(!manual.includes("自动"), "手动档位下不该再显示自动");
+
+  // 非法持久化值回落 auto（而不是把脏数据当档位用）
+  const dirty = await titleFor({ [DEPTH_KEY]: { mode: "超级深度" }, [SIGNAL_KEY]: { retried: 3, reverted: 0, submitted: 0 } });
+  assert.ok(dirty.includes("自动"), "非法档位必须回落 auto，当前：" + dirty);
 });
