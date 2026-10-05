@@ -2855,7 +2855,10 @@ async function makeClientHarness(options = {}) {
 
   const store = { hooks: [] };
   let cursor = 0;
-  const ranEffects = new Set();
+  // effect 槽：真实 React 会按依赖数组决定是否重跑，桩必须同样处理——否则像
+  // "草稿发散就丢弃撤销备份"这类依赖 [draft] 的 effect 永远只跑一次，
+  // 组件会停在早就该失效的状态里，测试于是断言到一个不存在的世界。
+  const effectSlots = new Map();
   let pendingEffects = [];
   let scheduled = false;
   let tree = null;
@@ -2882,7 +2885,7 @@ async function makeClientHarness(options = {}) {
       ];
     },
     useRef(value) { const i = cursor++; if (!(i in store.hooks)) store.hooks[i] = { current: value }; return store.hooks[i]; },
-    useEffect(fn) { const i = cursor++; pendingEffects.push({ i, fn }); },
+    useEffect(fn, deps) { const i = cursor++; pendingEffects.push({ i, fn, deps }); },
     useCallback(fn) { return fn; },
     useMemo(fn) { return fn(); },
   };
@@ -2919,17 +2922,56 @@ async function makeClientHarness(options = {}) {
     pendingEffects = [];
     tree = component(props);
     for (const item of pendingEffects) {
-      if (ranEffects.has(item.i)) continue;
-      ranEffects.add(item.i);
-      item.fn();
+      const previous = effectSlots.get(item.i);
+      const sameDeps =
+        previous !== undefined &&
+        Array.isArray(item.deps) &&
+        Array.isArray(previous.deps) &&
+        item.deps.length === previous.deps.length &&
+        item.deps.every((value, index) => Object.is(value, previous.deps[index]));
+      // 无依赖数组 = 每次渲染都跑；有依赖 = 依赖变了才跑（Object.is 逐项比较）
+      const shouldRun = previous === undefined || !Array.isArray(item.deps) || !sameDeps;
+      if (!shouldRun) continue;
+      if (typeof previous?.cleanup === "function") previous.cleanup();
+      effectSlots.set(item.i, { deps: item.deps, cleanup: item.fn() });
     }
     return tree;
   };
   rerender = render;
   render();
 
+  /** 深度优先按 data-testid 查找（revert 态下根节点不再是主按钮）。 */
+  const findByTestId = (node, id) => {
+    if (node === null || typeof node !== "object") return null;
+    if (node.props && node.props["data-testid"] === id) return node;
+    const children = [];
+    if (Array.isArray(node.children)) children.push(...node.children);
+    if (Array.isArray(node.props?.children)) children.push(...node.props.children);
+    for (const child of children) {
+      const found = findByTestId(child, id);
+      if (found !== null) return found;
+    }
+    return null;
+  };
+  const describe = () => {
+    const seen = [];
+    const walk = (node, depth) => {
+      if (node === null || typeof node !== "object" || depth > 3) return;
+      seen.push({ type: typeof node.type === "string" ? node.type : "fn", id: node.props?.["data-testid"] ?? null, mode: node.props?.["data-mode"] ?? null });
+      const children = [];
+      if (Array.isArray(node.children)) children.push(...node.children);
+      if (Array.isArray(node.props?.children)) children.push(...node.props.children);
+      for (const child of children) walk(child, depth + 1);
+    };
+    walk(tree, 0);
+    return seen;
+  };
+
   return {
     get tree() { return tree; },
+    /** 主按钮：revert 态下也用它，而不是假设根节点就是按钮。 */
+    primary() { return findByTestId(tree, "prompt-seed-button"); },
+    describe,
     render,
     client,
     writes,
@@ -3183,4 +3225,61 @@ test("T032 自适应深度：统计驱动的档位必须在渲染层可见", asy
   // 非法持久化值回落 auto（而不是把脏数据当档位用）
   const dirty = await titleFor({ [DEPTH_KEY]: { mode: "超级深度" }, [SIGNAL_KEY]: { retried: 3, reverted: 0, submitted: 0 } });
   assert.ok(dirty.includes("自动"), "非法档位必须回落 auto，当前：" + dirty);
+});
+
+  const makeFetch = (bodies) => (url, init) => {
+    const body = JSON.parse(init.body);
+    bodies.push(body);
+    if (body.feedback) return Promise.resolve({ json: () => Promise.resolve({ ok: true }) });
+    return Promise.resolve({ json: () => Promise.resolve({ ok: true, text: "请检查该模块的导出结构，并给出整理方案。" }) });
+  };
+  const kindsOf = (bodies) => bodies.filter((b) => b.feedback).map((b) => b.feedback.kind);
+
+test("T033 撤销路径：写回回传 applied，撤销回传 reverted 并写回原文", async () => {
+  const bodies = [];
+  const h = await makeClientHarness({ draft: "帮我改一下这个模块", fetchImpl: makeFetch(bodies) });
+  try {
+    h.primary().props.onClick();
+    await h.settle();
+    assert.equal(h.writes.length, 1, "改写已写回");
+    assert.equal(h.primary().props["data-mode"], "revert", "成功后进入 revert 态");
+    h.primary().props.onClick();
+    await h.settle();
+    // 顺序即语义：写回成功 = applied（采纳），撤销 = reverted（补多了）。记反会让自适应深度调错方向。
+    assert.deepEqual(kindsOf(bodies), ["applied", "reverted"], "实际：" + JSON.stringify(kindsOf(bodies)));
+    const reverted = bodies.filter((b) => b.feedback && b.feedback.kind === "reverted")[0].feedback;
+    assert.ok(Number.isFinite(reverted.charsDelta), "charsDelta 必须是数字");
+    assert.ok(Number.isFinite(reverted.elapsedMs), "elapsedMs 必须是数字");
+    assert.equal(h.writes.length, 2, "撤销写回原文");
+    assert.equal(h.writes[1], "帮我改一下这个模块", "写回的必须是原文");
+    assert.equal(h.primary().props["data-mode"], "idle", "撤销后回到 idle");
+  } finally {
+    h.restore();
+  }
+});
+
+test("T033 改后再点路径：回传 retried 并真的发起新一次优化", async () => {
+  // 注意与撤销路径的区别：运行记录会被**第一次**反馈消费掉（消费即置空），
+  // 所以在撤销之后再点不会回传 retried。retried 的真实条件是：上一稿仍在窗口内且未被消费。
+  const bodies = [];
+  const h = await makeClientHarness({ draft: "帮我改一下这个模块", fetchImpl: makeFetch(bodies) });
+  try {
+    h.primary().props.onClick();
+    await h.settle();
+    h.editDraft("换个方向：帮我看看性能");
+    h.render();
+    // 编辑后必须等一次微任务：发散检测（依赖 [draft] 的 effect）在渲染后执行并把
+    // 重渲染排进微任务，撤销备份是在那一次渲染里被丢掉的。真实用户点击的是重渲染
+    // 之后的按钮；拿着旧树点击会点到"撤销"，那不是用户会经历的时序。
+    await h.settle();
+    assert.notEqual(h.primary().props["data-mode"], "revert", "草稿一旦改动，撤销入口必须消失");
+    h.primary().props.onClick();
+    await h.settle();
+    assert.deepEqual(kindsOf(bodies), ["applied", "retried", "applied"], "实际：" + JSON.stringify(kindsOf(bodies)));
+    const optimizeCalls = bodies.filter((b) => !b.feedback);
+    assert.equal(optimizeCalls.length, 2, "retried 之后确实发起了新一次优化");
+    assert.equal(optimizeCalls[1].text, "换个方向：帮我看看性能", "新请求带的是用户改后的草稿");
+  } finally {
+    h.restore();
+  }
 });
