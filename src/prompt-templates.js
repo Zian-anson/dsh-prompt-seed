@@ -766,3 +766,41 @@ export function renderSignalUserPrompt(token, mode, anchor) {
 export function renderDeicticUserPrompt(input, context) {
   return renderContextBlock(context) + `SHORT DIRECTIVE: ${input}\n\nResolve its referent from the conversation above, then expand within the degree rules.`;
 }
+// ---------------------------------------------------------------------------
+// 会话消息轻润色契约（0.9.1）：对助手说的话只做清洁，绝不展开。
+// ---------------------------------------------------------------------------
+
+/** 会话消息轻润色 system 契约。 */
+export const CONVERSATIONAL_SYSTEM_TEMPLATE = `You tidy up a conversational message the user is about to send to a coding assistant. Nothing else.
+This is NOT a task seed. Do not elaborate it, do not answer it, do not turn a question into an instruction, do not add politeness the user did not write.
+Fix ONLY: typos, missing punctuation, obvious grammar slips, broken spacing.
+Keep: the question a question, the opinion an opinion, the user's own words, the language, the tone.
+Output length must stay within the input length plus 20 percent. If there is nothing to fix, return the input EXACTLY as given.
+EXAMPLES:
+- input 「还有一些问题，刚才我想问你的准确的是如何进行开源？」 → 刚好: unchanged (or fix only an actual typo).
+- input 同上 → 过头: 「请评估开源流程：先创建 GitHub 仓库，再发布 npm 包…」（把提问改写成了任务书——方向性失真，绝不允许）`;
+
+/** 会话消息一次越界后的收紧后缀。 */
+export const CONVERSATIONAL_RETRY_SUFFIX = `
+
+TIGHTENING (previous draft broke the rules): return the input with ONLY typo/punctuation fixes. Nothing added, nothing rephrased, nothing answered. When in doubt, return the input exactly as given.`;
+
+/**
+ * 会话消息轻润色的 system 提示词。
+ * @param {{tightened?: boolean}} [options] 是否追加收紧后缀。
+ * @returns {string} 契约文本。
+ */
+export function buildConversationalSystemPrompt(options = {}) {
+  const base = (getTemplateOverrides()?.conversationalSystem ?? CONVERSATIONAL_SYSTEM_TEMPLATE).trim();
+  return options.tightened === true ? base + CONVERSATIONAL_RETRY_SUFFIX : base;
+}
+
+/**
+ * 会话消息轻润色的 user 提示词（刻意不携带会话上下文：轻润色不需要，
+ * 也堵死"用上下文补内容"的路径）。
+ * @param {string} input 用户消息。
+ * @returns {string} user 提示词。
+ */
+export function renderConversationalUserPrompt(input) {
+  return `MESSAGE: ${input}\n\nTidy it up under the rules above, or return it unchanged.`;
+}

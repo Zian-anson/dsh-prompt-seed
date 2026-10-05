@@ -2261,3 +2261,73 @@ test("checkDeicticDegree 的动词守恒与上限独立可测", () => {
   assert.equal(checkSignalOutput("继续梳理。", "1", "继续梳理剩余功能", "choice").ok, true);
   assert.equal(checkSignalOutput("十五号。", "15", "几号发布？", "answer").reason, "token_missing");
 });
+
+// --------------------------------------------------------------------------
+// 会话消息分支（0.9.1）
+// --------------------------------------------------------------------------
+
+import { isConversationalMessage } from "../src/signal-inference.js";
+
+test("isConversationalMessage 识别真实病灶输入", () => {
+  // 真实事故样本（日志原句）
+  assert.equal(isConversationalMessage("还有一些问题，刚才我想问你的准确的是如何进行开源？是直接把仓库上传到GitHub上吗？"), true);
+  assert.equal(isConversationalMessage("但是我为什么觉得实际优化效果好像还不如之前的？这是怎么回事？"), true);
+  assert.equal(isConversationalMessage("你继续看一下这个项目，梳理一下现在的进度和代码结构，然后告诉我该怎么继续推进。"), true);
+  assert.equal(isConversationalMessage("我觉得深度模式的输出还是太长了"), true);
+  assert.equal(isConversationalMessage("这个方案该不该现在就定下来？"), true);
+});
+
+test("isConversationalMessage 不吞种子和精确指令", () => {
+  assert.equal(isConversationalMessage("帮我做个图片压缩的功能"), false);
+  assert.equal(isConversationalMessage("给设置页加个深色模式开关"), false);
+  assert.equal(isConversationalMessage("怎么做一个图片压缩功能？"), false, "带任务动词的问句是种子");
+  assert.equal(isConversationalMessage("删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏"), false);
+  assert.equal(isConversationalMessage("登录"), false);
+});
+
+test("describeMode 覆盖 conversational", () => {
+  assert.equal(describeMode("这是怎么回事？"), "conversational");
+  assert.equal(describeMode("帮我做个功能"), null);
+});
+
+test("会话消息模型原样返回 → 未改动，单次调用", async () => {
+  const input = "还有一些问题，刚才我想问你的准确的是如何进行开源？";
+  const llm = fakeLlm(textChunks(input));
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "conversational");
+  assert.equal(result.text, input);
+  assert.ok(result.detail.includes("未改动"));
+  assert.equal(llm.seen.length, 1);
+});
+
+test("会话消息轻润色在限度内 → 采纳润色稿", async () => {
+  const input = "还有一些问题，刚才我想问你的准确的是如何进行开源？";
+  const polished = "还有一个问题：刚才我想问你的准确的是如何进行开源？";
+  const llm = fakeLlm(textChunks(polished));
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true);
+  assert.equal(result.text, polished);
+  assert.ok(result.text.length <= Math.ceil(input.length * 1.35) + 6);
+});
+
+test("会话消息被模型改写成任务书 → 越限两次 → 兜底返回原文（永不拒绝）", async () => {
+  const input = "刚才我想问的准确的是如何进行开源？";
+  const taskSpec = "请评估开源流程：第一步在 GitHub 创建公开仓库并推送 main 分支；第二步执行 npm publish --access public 发布安装包；第三步向 awesome-dsh-plugin 提交收录 PR，并附上一句话英文描述与安装验证命令，确保 dsh plugin add 可直接安装；第四步在 README 中补齐双语说明与徽章。";
+  const llm = scriptedLlm([textChunks(taskSpec), textChunks(taskSpec)]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true, "会话消息分支永不拒绝");
+  assert.equal(result.text, input, "改不好就还原文");
+  assert.equal(llm.seen.length, 2, "一次收紧重试后兜底");
+});
+
+test("会话消息越限后收敛 → 采纳收敛稿并记 repairs=1", async () => {
+  const input = "刚才我想问的准确的是如何进行开源？";
+  const overlong = "请评估开源流程：第一步在 GitHub 创建公开仓库并推送 main 分支；第二步执行 npm publish --access public 发布安装包；第三步向 awesome-dsh-plugin 提交收录 PR，并补齐双语 README 与徽章，确保 dsh plugin add 可直接安装；第四步通知社区目录站抓取。";
+  const tightened = "刚才我想问的准确的是：该如何进行开源？";
+  const llm = scriptedLlm([textChunks(overlong), textChunks(tightened)]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true);
+  assert.equal(result.text, tightened);
+  assert.equal(result.gate.repairs, 1);
+});

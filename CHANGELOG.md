@@ -9,6 +9,25 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-05
+
+### Added
+
+- **The conversational branch: messages to the assistant are not task seeds.** A live
+  regression made it measurable: a question about *where* to publish the plugin
+  (「刚才我想问你的准确的是如何进行开源？」) was rewritten into a task spec for *how* to
+  publish — a change of direction the fidelity gate cannot catch, because `SCOPE_ADDED`
+  is defined against task seeds. Conversational inputs (meta-talk about the conversation,
+  opinions, why/choice questions, continuation directives like 「你继续看一下这个项目…」)
+  now get a dedicated light-touch contract: fix typos, punctuation, and grammar only;
+  never elaborate, never answer, never turn a question into an instruction. The output is
+  capped at input +35% with one tightened retry, and the failure fallback is the
+  **original text** — this branch never rejects (「宁可没干活，不可干错活」). The classifier
+  is deliberately conservative: anything with a task verb (「帮我做X」「实现一个X」) still
+  goes to the elaboration pipeline, so seeds cannot be swallowed by mistake.
+- `mode: "conversational"` in the event log; seven new tests cover the real regression
+  inputs, the non-swallowing guarantees, and both fallback paths.
+
 ## [0.9.0] - 2026-10-04
 
 ### Added

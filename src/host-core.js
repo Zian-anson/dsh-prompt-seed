@@ -41,6 +41,7 @@ import {
   TEMPERATURE,
   UNFOLD_RETRY_TEMPERATURE,
   buildAuditSystemPrompt,
+  buildConversationalSystemPrompt,
   buildDeicticSystemPrompt,
   buildElaborateSystemPrompt,
   buildPreciseSystemPrompt,
@@ -50,6 +51,7 @@ import {
   depthSuffix,
   normalizeResult,
   renderAuditUserPrompt,
+  renderConversationalUserPrompt,
   renderDeicticUserPrompt,
   renderElaborateUserPrompt,
   renderPreciseUserPrompt,
@@ -65,6 +67,7 @@ import {
   checkSignalOutput,
   classifySignalInput,
   inferPendingItem,
+  isConversationalMessage,
 } from "./signal-inference.js";
 
 /**
@@ -673,6 +676,66 @@ async function runDeicticExpansion(args) {
   };
 }
 
+/**
+ * 会话消息分支（0.9.1）：对助手的提问/观点/接续只做轻润色。
+ *
+ * 病灶是方向性失真：问句被补全契约改写成任务书。本分支的失败兜底是
+ * **原文**——轻润色模式永远不拒绝、不重试越改越大：改不好就还原文，
+ * 宁可没干活，不可干错活。确定性上限（输入 +35%）之外一次收紧重试，
+ * 仍越限直接回退原文。
+ * @param {object} args { llm, route, text, signal, log }
+ * @returns {Promise<object>} 与主流程同构的结果对象。
+ */
+async function runConversationalTouchup(args) {
+  const { llm, route, text, signal, log } = args;
+  const cap = Math.ceil(text.length * 1.35) + 6;
+  const maxTokens = Math.min(480, Math.max(160, text.length * 2));
+
+  const draft = await callModel(llm, route, {
+    system: buildConversationalSystemPrompt(),
+    user: renderConversationalUserPrompt(text),
+    temperature: 0,
+    maxTokens,
+    signal,
+    log,
+  });
+  if (!draft.ok) {
+    log?.("warn", "[prompt-seed] conversational touchup failed; returning the original");
+    return { ok: true, text, tier: "conversational", mode: "conversational",
+      gate: { verdict: "unverified", repairs: 0, rechecked: false, violations: [] }, detail: "会话消息→原文返回" };
+  }
+  if (draft.text === "" ) {
+    return { ok: true, text, tier: "conversational", mode: "conversational",
+      gate: { verdict: "unverified", repairs: 0, rechecked: false, violations: [] }, detail: "会话消息→原文返回" };
+  }
+
+  if (draft.text.length > cap) {
+    log?.("warn", "[prompt-seed] conversational draft exceeded the cap; one tightened retry", {
+      inputChars: text.length, outputChars: draft.text.length, cap,
+    });
+    const retry = await callModel(llm, route, {
+      system: buildConversationalSystemPrompt({ tightened: true }),
+      user: renderConversationalUserPrompt(text),
+      temperature: 0,
+      maxTokens,
+      signal,
+      log,
+    });
+    if (retry.ok && retry.text !== "" && retry.text.length <= cap) {
+      return { ok: true, text: retry.text, tier: "conversational", mode: "conversational",
+        gate: { verdict: "unverified", repairs: 1, rechecked: false, violations: [] }, detail: "会话消息→轻润色（一次收紧）" };
+    }
+    return { ok: true, text, tier: "conversational", mode: "conversational",
+      gate: { verdict: "unverified", repairs: 0, rechecked: false, violations: [] }, detail: "会话消息→原文返回" };
+  }
+
+  // 上限内的稿子一律采纳：轻润色的"实质未变"是常态而非失败（补全闸的
+  // 语义在这里恰好相反），它只决定凭证文案，不决定取舍。
+  const unchanged = isSubstantivelyUnchanged(text, draft.text);
+  return { ok: true, text: draft.text, tier: "conversational", mode: "conversational",
+    gate: { verdict: "unverified", repairs: 0, rechecked: false, violations: [] },
+    detail: unchanged ? "会话消息→未改动" : "会话消息→轻润色" };
+}
 export async function optimizePromptText(options) {
   const { llm, route, text, context, signal, log } = options ?? {};
 
@@ -713,6 +776,14 @@ export async function optimizePromptText(options) {
   }
   if (signalClass.kind === "deictic") {
     return await runDeicticExpansion({ llm, route, text: trimmed, context, signal, log });
+  }
+
+  // ---- 会话消息分支（0.9.1，确定性分类，不花调用）----
+  // 对助手的提问/追问/观点/接续不是需求种子：补全契约会把问句改写成任务书
+  // （方向性失真，SCOPE_ADDED 按任务种子定义拦不住）。命中即只做轻润色，
+  // 失败兜底是原文——本分支永不拒绝。
+  if (isConversationalMessage(trimmed)) {
+    return await runConversationalTouchup({ llm, route, text: trimmed, signal, log });
   }
 
   // ---- 模式选择（确定性，不花调用）----
