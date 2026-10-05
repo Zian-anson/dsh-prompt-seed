@@ -2573,3 +2573,23 @@ test("T010 提问里带路径与标识符，仍走会话分支（有意的前置
   assert.ok(llm.seen[0].system.includes("conversational message"), "提问就是提问，不因为提到文件而变成待补全的种子");
   assert.equal(res.text, text, "原样返回（本例模型回显输入）");
 });
+
+// --------------------------------------------------------------------------
+// T012：错误码与用户文案的完备性
+// --------------------------------------------------------------------------
+
+import { ERROR_MESSAGES } from "../src/host-core.js";
+
+test("T012 每个错误码都有面向用户的中文文案，且没有孤儿文案", () => {
+  const codes = Object.values(ERROR_CODES);
+  for (const code of codes) {
+    const message = ERROR_MESSAGES[code];
+    assert.equal(typeof message, "string", `错误码 ${code} 缺文案（界面会显示原始 code）`);
+    assert.ok(message.trim().length > 0, `错误码 ${code} 的文案为空`);
+    assert.ok(/[\u4e00-\u9fff]/.test(message), `错误码 ${code} 的文案应面向用户（中文），当前为：${message}`);
+  }
+  for (const key of Object.keys(ERROR_MESSAGES)) {
+    assert.ok(codes.includes(key), `文案 ${key} 没有对应的错误码（孤儿条目）`);
+  }
+  assert.ok(codes.length >= 12, "错误码数量骤降说明有码被误删");
+});
