@@ -21,6 +21,13 @@ developer preview and moves quickly. Patch bumps will not break anything.
   signal (a number, a go-ahead) has no anchor in the conversation — was falling through to the red
   error state. It now shares the neutral declined state with `nothing_to_optimize`, because
   declining to guess an intent is the system working as designed.
+- **`?debug=1` works again, and its output is now pinned by a test.** The 0.9.0 context refactor
+  renamed a local to a `{ context, assistantTail }` bundle and updated the call into the pipeline,
+  but the debug block kept reading the old name — so every request carrying the switch threw a
+  `ReferenceError` inside the handler. That is the first command the troubleshooting table tells a
+  user to run when an upgrade appears to do nothing, and it is how the loaded `codeVersion` gets
+  confirmed. The route test now pins the field set, the version, the shape-only context counts
+  (never the draft or the context text) and the switch staying opt-in.
 
 ### Changed
 
