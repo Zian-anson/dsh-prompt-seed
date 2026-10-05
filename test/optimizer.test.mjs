@@ -3019,3 +3019,40 @@ test("T027 引用守恒的正例：标签原样保留时正常写回一次", asy
     h.restore();
   }
 });
+
+test("T028 路由挂靠 fiber 生命周期：dispose 后不残留，重复 apply 不叠加", async () => {
+  const host = await import("../lib/index.js");
+
+  // 默认 helper 的 register 返回空函数，测不出"残留"——这里返回真正的摘除器。
+  const makeServer = () => {
+    const routes = [];
+    return {
+      routes,
+      register(route) {
+        routes.push(route);
+        return () => {
+          const i = routes.indexOf(route);
+          if (i >= 0) routes.splice(i, 1);
+        };
+      },
+    };
+  };
+
+  const webServer = makeServer();
+  const disposers = [];
+  const ctx = makeHostContext(webServer, {});
+  ctx.effect = (fn) => { const disposer = fn(); disposers.push(disposer); return disposer; };
+
+  host.apply(ctx, { samples: false });
+  assert.equal(webServer.routes.length, 1, "apply 必须注册恰好一条路由");
+  assert.equal(webServer.routes[0].path, "/api/prompt-seed/optimize");
+  assert.equal(typeof disposers[0], "function", "effect 必须返回 disposer，否则热升级会撞 duplicate route");
+
+  // 模拟 disable → enable：先回收，再挂一次
+  disposers[0]();
+  assert.equal(webServer.routes.length, 0, "dispose 后不得残留路由");
+  host.apply(ctx, { samples: false });
+  assert.equal(webServer.routes.length, 1, "重新 apply 后恰好一条，不叠加");
+  disposers[1]();
+  assert.equal(webServer.routes.length, 0, "再次回收仍然干净");
+});
