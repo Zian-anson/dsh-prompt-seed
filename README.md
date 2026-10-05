@@ -376,9 +376,13 @@ clean clone.
    and a conservation guard refuses the write-back if any chip label would be lost. The reference
    itself is never dropped silently; its structure is.
 2. UI strings are Chinese-only; the `locale` service is not wired.
-3. Non-streaming, and the gate costs a second call: 1 call when the precise-input shortcut applies,
-   2 on the happy path, 4 when a repair is needed (the repaired draft is always re-audited).
-   Measured 0.9 s (precise input, audit skipped) to ~20 s (worst case, slow provider).
+3. Non-streaming, and the call budget depends on which contract the input lands in:
+   **1** for a bare signal (no audit — the expansion is anchored, not judged); **1** when the
+   precise-input shortcut applies (the audit is skipped); **1–2** for a short directive or a
+   conversational message (one draft, plus one tightened retry if the degree rules or the length cap
+   are broken); **2** on the elaboration happy path; **4** when a repair is needed (the repaired draft
+   is always re-audited). Measured 0.9 s (precise input, audit skipped) to ~20 s (worst case, slow
+   provider).
 4. `TONE_SHIFTED` and `PADDED` are judgement calls by the audit model, not deterministic checks —
    a misjudgement inside the tolerance band is the residual fidelity risk.
 5. The audit judge and the rewriter share the routed model by default; routing the audit to a
