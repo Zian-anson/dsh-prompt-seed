@@ -2331,3 +2331,28 @@ test("会话消息越限后收敛 → 采纳收敛稿并记 repairs=1", async ()
   assert.equal(result.text, tightened);
   assert.equal(result.gate.repairs, 1);
 });
+
+// --------------------------------------------------------------------------
+// 共享消息文本转换（T001 去重）
+// --------------------------------------------------------------------------
+
+import { messageTextOf } from "../src/message-text.js";
+
+test("messageTextOf 处理字符串 / 块数组 / 形状漂移", () => {
+  assert.equal(messageTextOf("hello"), "hello");
+  assert.equal(messageTextOf([{ type: "text", text: "a" }, { type: "text", text: "b" }]), "a b");
+  assert.equal(messageTextOf([{ type: "tool", text: "x" }, { type: "text", text: "keep" }]), "keep");
+  assert.equal(messageTextOf([{ type: "text", text: 42 }]), "", "非字符串 text 必须丢弃");
+  assert.equal(messageTextOf(null), "");
+  assert.equal(messageTextOf(undefined), "");
+  assert.equal(messageTextOf({ type: "text", text: "x" }), "", "非数组对象不是合法消息内容");
+  assert.equal(messageTextOf([null, "raw", { type: "text", text: "y" }]), "y");
+});
+
+test("两个话轮提取器共用同一份文本转换（去重回归守卫）", () => {
+  const content = [{ type: "text", text: "共享实现" }, { type: "tool", text: "ignored" }];
+  const userSurface = { events: [{ type: "user/message", data: { role: "user", content } }] };
+  const assistantSurface = { events: [{ type: "assistant/message", data: { role: "assistant", content } }] };
+  assert.equal(extractRecentContext(userSurface)?.[0]?.text, "共享实现");
+  assert.equal(extractAssistantTail(assistantSurface)?.text, "共享实现");
+});

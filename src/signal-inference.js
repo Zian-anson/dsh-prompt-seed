@@ -17,6 +17,8 @@
  * 模型只在锚点与上限围出的栅栏里做一次定向展开。
  */
 
+import { messageTextOf } from "./message-text.js";
+
 /** 信号类输出的软上限（字符）。 */
 export const SIGNAL_MAX_CHARS = 120;
 
@@ -147,24 +149,11 @@ export function extractAssistantTail(surface) {
     const data = event.data;
     if (data === null || typeof data !== "object") continue;
     if (data.role !== undefined && data.role !== "assistant") continue;
-    const text = assistantTextOf(data.content).replace(/\s+/g, " ").trim();
+    const text = messageTextOf(data.content).replace(/\s+/g, " ").trim();
     if (text === "") continue;
     return { role: "assistant", text: text.length > 300 ? text.slice(0, 300) + "…" : text };
   }
   return undefined;
-}
-
-/** 助手消息 content（字符串或块数组）→ 纯文本。 */
-function assistantTextOf(content) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  const parts = [];
-  for (const block of content) {
-    if (block !== null && typeof block === "object" && block.type === "text" && typeof block.text === "string") {
-      parts.push(block.text);
-    }
-  }
-  return parts.join(" ");
 }
 
 /** 选项标记：行首或分段开头的 1. / 1、/ (1) / ① 等。 */

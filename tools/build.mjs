@@ -22,6 +22,7 @@ const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 const HOST_COPIES = [
   ["src/prompt-templates.js", "lib/prompt-templates.js"],
   ["src/host-core.js", "lib/host-core.js"],
+  ["src/message-text.js", "lib/message-text.js"],
   ["src/session-context.js", "lib/session-context.js"],
   ["src/sample-log.js", "lib/sample-log.js"],
   ["src/signal-inference.js", "lib/signal-inference.js"],

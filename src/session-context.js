@@ -16,6 +16,8 @@
  * 都安全降级为"无上下文"，绝不阻塞优化本身。
  */
 
+import { messageTextOf } from "./message-text.js";
+
 /** 每条消息的截断长度（字符）。 */
 const PER_MESSAGE_LIMIT = 300;
 
@@ -41,29 +43,12 @@ export function extractRecentContext(surface) {
     // 只认真实用户话轮；runtime-context / time-context 注入快照一律跳过。
     const kind = data.source?.kind;
     if (kind !== undefined && kind !== "user") continue;
-    const text = textOfBlocks(data.content).replace(/\s+/g, " ").trim();
+    const text = messageTextOf(data.content).replace(/\s+/g, " ").trim();
     if (text === "") continue;
     picked.push({ role: "user", text: text.length > PER_MESSAGE_LIMIT ? `${text.slice(0, PER_MESSAGE_LIMIT)}…` : text });
   }
   if (picked.length === 0) return undefined;
   return picked.reverse();
-}
-
-/**
- * 从消息 content（字符串或块数组）里提取纯文本。
- * @param {unknown} content 消息内容。
- * @returns {string} 拼接后的文本。
- */
-function textOfBlocks(content) {
-  if (typeof content === "string") return content;
-  if (!Array.isArray(content)) return "";
-  const parts = [];
-  for (const block of content) {
-    if (block !== null && typeof block === "object" && block.type === "text" && typeof block.text === "string") {
-      parts.push(block.text);
-    }
-  }
-  return parts.join(" ");
 }
 
 /** 指代/回指词：出现即说明这条草稿在指向上文，而不是自足描述。 */
