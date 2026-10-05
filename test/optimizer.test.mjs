@@ -3315,3 +3315,53 @@ test("T034 事件日志字段与 FEATURES 声明一致（文档抽查转常驻�
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test("T035 submitted 信号的两条触发路径：草稿被清空 / 离开 plain 阶段", async () => {
+  const bodies = [];
+  const h = await makeClientHarness({
+    draft: "帮我改一下这个模块",
+    fetchImpl: (url, init) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (body.feedback) return Promise.resolve({ json: () => Promise.resolve({ ok: true }) });
+      return Promise.resolve({ json: () => Promise.resolve({ ok: true, text: "请检查该模块的导出结构，并给出整理方案。" }) });
+    },
+  });
+  try {
+    h.primary().props.onClick();
+    await h.settle();
+    assert.deepEqual(bodies.filter((b) => b.feedback).map((b) => b.feedback.kind), ["applied"]);
+
+    // 路径一：草稿被清空（用户把结果发出去了）→ 最强正信号
+    h.editDraft("");
+    h.render();
+    await h.settle();
+    assert.deepEqual(
+      bodies.filter((b) => b.feedback).map((b) => b.feedback.kind),
+      ["applied", "submitted"],
+      "草稿清空必须回传 submitted",
+    );
+
+    // 路径二：会话离开 plain 阶段（提交/切换）→ 同样是最强正信号
+    const h2 = await makeClientHarness({
+      draft: "帮我改一下这个模块",
+      fetchImpl: (url, init) => {
+        const body = JSON.parse(init.body);
+        bodies.push(body);
+        if (body.feedback) return Promise.resolve({ json: () => Promise.resolve({ ok: true }) });
+        return Promise.resolve({ json: () => Promise.resolve({ ok: true, text: "请检查该模块的导出结构，并给出整理方案。" }) });
+      },
+    });
+    const kindsBefore = bodies.filter((b) => b.feedback).length;
+    h2.primary().props.onClick();
+    await h2.settle();
+    h2.client.phase = "submitting";
+    h2.render();
+    await h2.settle();
+    const kinds = bodies.filter((b) => b.feedback).map((b) => b.feedback.kind);
+    assert.equal(kinds[kinds.length - 1], "submitted", "离开 plain 阶段必须回传 submitted，实际：" + JSON.stringify(kinds.slice(kindsBefore)));
+    h2.restore();
+  } finally {
+    h.restore();
+  }
+});
