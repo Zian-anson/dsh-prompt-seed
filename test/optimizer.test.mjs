@@ -2591,7 +2591,7 @@ test("T012 每个错误码都有面向用户的中文文案，且没有孤儿文
   for (const key of Object.keys(ERROR_MESSAGES)) {
     assert.ok(codes.includes(key), `文案 ${key} 没有对应的错误码（孤儿条目）`);
   }
-  assert.ok(codes.length >= 12, "错误码数量骤降说明有码被误删");
+  assert.ok(codes.length >= 10, "错误码数量骤降说明有码被误删（10 = 现存全部，stale/unknown 已作为死码移除）");
 });
 
 // --------------------------------------------------------------------------
