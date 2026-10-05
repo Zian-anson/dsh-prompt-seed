@@ -2685,3 +2685,72 @@ test("T015 五状态优先级链与各态呈现约束", async () => {
     "微光只在 idle 且有内容时出现",
   );
 });
+
+// --------------------------------------------------------------------------
+// T017：审计 fail-open 与 THIN 分支的组合矩阵
+// --------------------------------------------------------------------------
+
+test("T017 审计无法解析 → fail-open 接受改写稿（不因解析失败而拒绝）", async () => {
+  const llm = scriptedLlm([
+    textChunks("请检查这段代码是否存在问题，并说明出现在哪里。"),
+    textChunks("这段话说得不太清楚，我重新讲一遍……"), // 既非 OK 也非任何 KIND 行
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "帮我看看这段代码" });
+  assert.equal(result.ok, true, "审判解析失败必须 fail-open");
+  assert.equal(result.text, "请检查这段代码是否存在问题，并说明出现在哪里。");
+  assert.equal(llm.seen.length, 2, "只发改写 + 审判两次调用（不因 fail-open 多跑）");
+  assert.equal(result.tier, "full");
+});
+
+test("T017 THIN 只对种子再补一次：非种子输入被报 THIN 时不追加调用", async () => {
+  const draft = "删除 src/utils/legacy.js 中未被引用的导出，然后运行一遍测试，确认没有破坏任何功能。";
+  const llm = scriptedLlm([textChunks(draft), textChunks("THIN: 只改了措辞")]);
+  const result = await optimizePromptText({
+    llm,
+    route: ROUTE,
+    text: "删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(llm.seen.length, 2, "带路径锚定的输入被报 THIN 不值得再花调用（审判误报居多）");
+  assert.equal(result.text, draft);
+});
+
+test("T017 THIN → 补全 → 二次审判失真：回退薄但忠实的第一稿", async () => {
+  const first = "请检查这段代码是否存在问题，并说明出现在哪里。";
+  const elaborated = "请检查这段代码是否存在问题，说明出现在哪里，并顺带评估整个项目的测试覆盖率和发布计划。";
+  const llm = scriptedLlm([
+    textChunks(first),
+    textChunks("THIN: 只改了措辞"),
+    textChunks(elaborated),
+    textChunks("SCOPE_ADDED: 追加了测试覆盖率与发布计划"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "帮我看看这段代码" });
+  assert.equal(result.ok, true, "薄但忠实优于直接拒绝");
+  assert.equal(result.text, first, "补全越线时必须回退第一稿");
+  assert.equal(result.tier, "thin");
+  assert.equal(result.gate.verdict, "thin");
+  assert.equal(llm.seen.length, 4, "改写 + 审判 + 补全 + 二次审判");
+});
+
+test("T017 两道审判的 fail-open 方向相反：第一道放行，第二道保守回退", async () => {
+  // 这是**有意的不对称**，且此前没有测试钉住它：
+  //   第一道审判解析失败 → fail-open，接受改写稿（闸门是纵深防御，不是唯一机制）；
+  //   第二道审判解析失败 → 保守，回退薄但忠实的第一稿。
+  // 理由：第二道审判存在的唯一目的就是验证"补全没有越线"。它无法解析时，
+  // 补全稿就是**未经验证**的；而本产品的前提正是"闸门让补全安全"。宁可薄，
+  // 不可把未验证的加料交付出去。
+  const first = "请检查这段代码是否存在问题，并说明出现在哪里。";
+  const elaborated = "请检查这段代码是否存在问题，说明出现在哪里，并指出你判断的依据。";
+  const llm = scriptedLlm([
+    textChunks(first),
+    textChunks("THIN: 只改了措辞"),
+    textChunks(elaborated),
+    textChunks("嗯，我觉得这版还行吧。"), // 解析不出任何 KIND 行
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "帮我看看这段代码" });
+  assert.equal(result.ok, true, "仍然交付（不拒绝）");
+  assert.equal(result.text, first, "第二道审判无法解析时必须回退第一稿");
+  assert.equal(result.tier, "thin");
+  assert.equal(result.gate.rechecked, false);
+  assert.equal(llm.seen.length, 4);
+});
