@@ -45,6 +45,18 @@ The most common false alarm: **host-half changes need an app restart.** `disable
 `apply` against the cached module, so a change can appear to have no effect until the process is
 restarted. Check `_debug.codeVersion` first.
 
+## Releasing
+
+1. Move the Unreleased section in CHANGELOG.md into a new version section, and bump package.json.
+2. Update the test count wherever it is written — both READMEs and docs/FEATURES.md.
+   `npm run check:docs` is part of the gate and fails otherwise.
+3. `npm test` — builds `lib/` from `src/`, checks the counts, runs the suite.
+4. `npm pack`, then create a GitHub release tagged `v<version>` with the tarball attached.
+5. `node tools/verify-release.mjs v<version>` — downloads the **published** asset and compares
+   its `lib/` byte-for-byte against the local build, plus the version and every entry point
+   the manifest declares. It fails on any difference, so run it *after* the release, not
+   before: it is the only check that proves users are getting what the repository says.
+
 ## Commit messages
 
 [Conventional Commits](https://www.conventionalcommits.org/) are welcome but not enforced:
