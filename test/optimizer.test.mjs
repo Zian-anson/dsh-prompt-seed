@@ -2760,106 +2760,25 @@ test("T017 两道审判的 fail-open 方向相反：第一道放行，第二道�
 // --------------------------------------------------------------------------
 
 test("T022 驱动完整响应：cannot_infer 必须渲染成 declined 中性态而不是 error", async () => {
-  const source = await readFile(join(root, "lib", "client.js"), "utf8");
-  let entry;
-  new Function("window", source)({ __ModuleLoader__: { load: (v) => { entry = v; } } });
-
-  // 与 T006 的产物断言不同，这里的替身**保留 hook 槽并在 setState 后重渲染**，
-  // 因此可以真的走完 onClick → fetch → setState → 重渲染 这条链。
-  const store = { hooks: [] };
-  // 两条关键规则，缺一条就会无限递归（实测踩过）：
-  //   ① setState 只在微任务里重渲染（同步重渲染会让 effect→setState→渲染 成环）；
-  //   ② effect 在渲染**之后**执行，而不是渲染中同步执行。
-  let cursor = 0;
-  const ranEffects = new Set();
-  let pendingEffects = [];
-  let scheduled = false;
-  let rerender = () => {};
-  const scheduleRerender = () => {
-    if (scheduled) return;
-    scheduled = true;
-    queueMicrotask(() => { scheduled = false; rerender(); });
-  };
-  const React = {
-    createElement(type, props, children) {
-      if (typeof type === "function") return type(props || {});
-      return { type, props: props || {}, children: children === undefined ? [] : [].concat(children) };
-    },
-    useState(initial) {
-      const i = cursor++;
-      if (!(i in store.hooks)) store.hooks[i] = typeof initial === "function" ? initial() : initial;
-      return [
-        store.hooks[i],
-        (value) => {
-          store.hooks[i] = typeof value === "function" ? value(store.hooks[i]) : value;
-          scheduleRerender();
-        },
-      ];
-    },
-    useRef(value) { const i = cursor++; if (!(i in store.hooks)) store.hooks[i] = { current: value }; return store.hooks[i]; },
-    useEffect(fn) { const i = cursor++; pendingEffects.push({ i, fn }); },
-    useCallback(fn) { return fn; },
-    useMemo(fn) { return fn(); },
-  };
-  const exported = entry.factory(() => React);
-
-  const previousFetch = globalThis.fetch;
-  const previousWindow = globalThis.window;
-  globalThis.window = { localStorage: { getItem: () => null, setItem() {} } };
+  // 与 T006 的产物断言不同，harness 会真的走完 onClick → fetch → setState → 重渲染。
   const CANNOT_INFER_MESSAGE = "上下文不足以推断这个输入的含义，请直接写出想说的内容";
-  globalThis.fetch = () =>
-    Promise.resolve({
-      json: () => Promise.resolve({ ok: false, code: "cannot_infer", error: CANNOT_INFER_MESSAGE }),
-    });
-
+  const h = await makeClientHarness({
+    draft: "42",
+    fetchImpl: () => Promise.resolve({ json: () => Promise.resolve({ ok: false, code: "cannot_infer", error: CANNOT_INFER_MESSAGE }) }),
+  });
   try {
-    const registered = [];
-    const slots = {
-      inject(name, cb) { registered.push({ name, value: cb() }); },
-      register(meta, render) { return { meta, render }; },
-    };
-    exported.apply({ slots, effect() {} });
-    const component = registered[0].value.render;
-    const props = {
-      useInput: (selector) => selector({ draft: "42", draftRev: 1, phase: "plain", occurrences: [] }),
-      inputActions: { setDraft() {}, addAttachments() {}, removeAttachment() {}, pruneAttachments() {} },
-      t: (key) => key,
-    };
-
-    let tree = null;
-    const renderOnce = () => {
-      cursor = 0;
-      pendingEffects = [];
-      tree = component(props);
-      // 渲染完成后执行本轮登记、且从未执行过的 effect（与真实 React 空依赖数组等价）
-      for (const item of pendingEffects) {
-        if (ranEffects.has(item.i)) continue;
-        ranEffects.add(item.i);
-        item.fn();
-      }
-      return tree;
-    };
-    rerender = () => { renderOnce(); };
-
-    const first = renderOnce();
-    assert.equal(first.props["data-mode"], "idle", "初始应为 idle");
-    assert.equal(typeof first.props.onClick, "function", "主按钮必须可点击");
-
-    first.props.onClick();
-    for (let i = 0; i < 5; i += 1) await Promise.resolve();
-    await new Promise((resolve) => setTimeout(resolve, 10));
-
-    assert.equal(tree.props["data-mode"], "declined", "cannot_infer 必须落到中性盾态");
-    assert.notEqual(tree.props.onClick, undefined);
-    const title = String(tree.props.title || "");
+    assert.equal(h.tree.props["data-mode"], "idle", "初始应为 idle");
+    assert.equal(typeof h.tree.props.onClick, "function", "主按钮必须可点击");
+    h.tree.props.onClick();
+    await h.settle();
+    assert.equal(h.tree.props["data-mode"], "declined", "cannot_infer 必须落到中性盾态");
+    const title = String(h.tree.props.title || "");
     assert.ok(title.includes("无法推断") || title.includes("上下文不足"), "tooltip 必须给出可读原因，当前：" + title);
+    assert.deepEqual(h.writes, [], "拒绝路径绝不能写回草稿");
   } finally {
-    globalThis.fetch = previousFetch;
-    if (previousWindow === undefined) delete globalThis.window;
-    else globalThis.window = previousWindow;
+    h.restore();
   }
 });
-
 // --------------------------------------------------------------------------
 // T023：三个启发式在共享边界输入上的一致性
 // --------------------------------------------------------------------------
@@ -2901,4 +2820,136 @@ test("T023 assessInflation 的边界：空输入不抛且比值有限；形态�
   assert.equal(closed.suspicious, true);
   const questionOnly = assessInflation("这个能优化吗？", "请检查该模块并输出一份性能对比表格。");
   assert.equal(questionOnly.openEndedClosed, false, "问句形态不在 OPEN_ENDED_PATTERN 内，故不触发闭合告警（判定口径与 looksOpenEnded 不同）");
+});
+
+// --------------------------------------------------------------------------
+// T025：客户端行为测试 harness（自 T022 抽取）+ 网络失败路径
+// --------------------------------------------------------------------------
+
+/**
+ * 客户端行为 harness：可重渲染的 React 替身 + slot 注册 + 可注入 fetch。
+ *
+ * 抽取原因：每加一条行为测试就复制一份桩，很快会出现"某个测试的桩修了、
+ * 其它测试的没修"——而桩本身正是这些测试的可信度来源。
+ *
+ * 两条关键规则（缺一条就无限递归，实测踩过）：
+ *   ① setState 只在微任务里重渲染；② effect 在渲染之后执行。
+ * @param {{fetchImpl?: Function, draft?: string}} [options] 注入点。
+ * @returns {Promise<object>} harness 句柄（tree/render/settle/writes/restore…）。
+ */
+async function makeClientHarness(options = {}) {
+  const source = await readFile(join(root, "lib", "client.js"), "utf8");
+  let entry;
+  new Function("window", source)({ __ModuleLoader__: { load: (v) => { entry = v; } } });
+
+  const store = { hooks: [] };
+  let cursor = 0;
+  const ranEffects = new Set();
+  let pendingEffects = [];
+  let scheduled = false;
+  let tree = null;
+  let rerender = () => {};
+  const scheduleRerender = () => {
+    if (scheduled) return;
+    scheduled = true;
+    queueMicrotask(() => { scheduled = false; rerender(); });
+  };
+  const React = {
+    createElement(type, props, children) {
+      if (typeof type === "function") return type(props || {});
+      return { type, props: props || {}, children: children === undefined ? [] : [].concat(children) };
+    },
+    useState(initial) {
+      const i = cursor++;
+      if (!(i in store.hooks)) store.hooks[i] = typeof initial === "function" ? initial() : initial;
+      return [
+        store.hooks[i],
+        (value) => {
+          store.hooks[i] = typeof value === "function" ? value(store.hooks[i]) : value;
+          scheduleRerender();
+        },
+      ];
+    },
+    useRef(value) { const i = cursor++; if (!(i in store.hooks)) store.hooks[i] = { current: value }; return store.hooks[i]; },
+    useEffect(fn) { const i = cursor++; pendingEffects.push({ i, fn }); },
+    useCallback(fn) { return fn; },
+    useMemo(fn) { return fn(); },
+  };
+  const exported = entry.factory(() => React);
+
+  const previousFetch = globalThis.fetch;
+  const previousWindow = globalThis.window;
+  globalThis.window = { localStorage: { getItem: () => null, setItem() {} } };
+  globalThis.fetch = options.fetchImpl ?? (() => Promise.reject(new Error("harness: no fetch stub")));
+
+  const client = { draft: options.draft ?? "", draftRev: 1, phase: "plain", occurrences: options.occurrences ?? [] };
+  const writes = [];
+  const props = {
+    useInput: (selector) => selector(client),
+    inputActions: {
+      setDraft(text) { writes.push(text); client.draft = text; },
+      addAttachments() {},
+      removeAttachment() {},
+      pruneAttachments() {},
+    },
+    t: (key) => key,
+  };
+
+  const registered = [];
+  const slots = {
+    inject(name, cb) { registered.push({ name, value: cb() }); },
+    register(meta, render) { return { meta, render }; },
+  };
+  exported.apply({ slots, effect() {} });
+  const component = registered[0].value.render;
+
+  const render = () => {
+    cursor = 0;
+    pendingEffects = [];
+    tree = component(props);
+    for (const item of pendingEffects) {
+      if (ranEffects.has(item.i)) continue;
+      ranEffects.add(item.i);
+      item.fn();
+    }
+    return tree;
+  };
+  rerender = render;
+  render();
+
+  return {
+    get tree() { return tree; },
+    render,
+    client,
+    writes,
+    /** 模拟用户在等待期间改动草稿（draftRev 递增，触发 CAS 失效）。 */
+    editDraft(text) { client.draft = text; client.draftRev += 1; },
+    /** 让 fetch 的 then 链与排队中的重渲染跑完。 */
+    async settle() {
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 8));
+    },
+    restore() {
+      globalThis.fetch = previousFetch;
+      if (previousWindow === undefined) delete globalThis.window;
+      else globalThis.window = previousWindow;
+    },
+  };
+}
+
+test("T025 网络失败：fetch reject → error 态，草稿一个字符都不写回", async () => {
+  const h = await makeClientHarness({
+    draft: "帮我把这个模块的导出整理一下",
+    fetchImpl: () => Promise.reject(new Error("network down")),
+  });
+  try {
+    assert.equal(h.tree.props["data-mode"], "idle");
+    h.tree.props.onClick();
+    await h.settle();
+    assert.equal(h.tree.props["data-mode"], "error", "网络失败必须落到 error 态");
+    assert.ok(String(h.tree.props.title || "").includes("network down"), "必须把失败原因带到界面");
+    assert.deepEqual(h.writes, [], "失败时绝不写回草稿（不变量 I1）");
+  } finally {
+    h.restore();
+  }
 });
