@@ -2451,3 +2451,56 @@ test("T004 resolveSamplePath 退化：空白 DSH_HOME 回落 homedir，非路径
     else process.env.DSH_HOME = previous;
   }
 });
+
+// --------------------------------------------------------------------------
+// T005：session-context 形状漂移与取序边界
+// --------------------------------------------------------------------------
+
+test("T005 session-context 形状漂移：任何非法结构都降级为无上下文", () => {
+  assert.equal(extractRecentContext({ events: "nope" }), undefined, "events 非数组");
+  assert.equal(extractRecentContext({ events: { 0: {} } }), undefined, "events 是对象不是数组");
+  assert.equal(
+    extractRecentContext({ events: [null, 42, "x", {}, { type: "user/message" }, { type: "user/message", data: null }] }),
+    undefined,
+    "垃圾节点与半截节点必须全部跳过",
+  );
+  assert.equal(
+    extractRecentContext({ events: [{ type: "user/message", data: { role: "assistant", content: "x" } }] }),
+    undefined,
+    "角色不是 user 的消息不是用户话轮",
+  );
+  assert.equal(
+    extractRecentContext({ events: [{ type: "user/message", data: { role: "user", content: [] } }] }),
+    undefined,
+    "空内容不算话轮",
+  );
+  assert.equal(
+    extractRecentContext({ events: [{ type: "user/message", data: { role: "user", content: [{ type: "tool", text: "x" }] } }] }),
+    undefined,
+    "只有非 text 块时文本为空",
+  );
+  assert.equal(
+    extractRecentContext({ events: [{ type: "user/message", data: { role: "user", content: "   \n  " } }] }),
+    undefined,
+    "纯空白话轮不入上下文",
+  );
+});
+
+test("T005 只保留最近两条真实话轮；source 缺失按真实话轮处理", () => {
+  const mk = (t, kind) => ({
+    type: "user/message",
+    data: { role: "user", ...(kind === "none" ? {} : { source: { kind } }), content: [{ type: "text", text: t }] },
+  });
+  const surface = { events: [mk("第一条", "user"), mk("第二条", "user"), mk("第三条", "user")] };
+  assert.deepEqual(
+    extractRecentContext(surface).map((m) => m.text),
+    ["第二条", "第三条"],
+    "只取最近两条，且按时间正序返回",
+  );
+  const noSource = { events: [mk("没有 source 字段", "none")] };
+  assert.deepEqual(
+    extractRecentContext(noSource).map((m) => m.text),
+    ["没有 source 字段"],
+    "source.kind 缺失时按真实用户话轮处理（只有显式非 user 才跳过）",
+  );
+});
