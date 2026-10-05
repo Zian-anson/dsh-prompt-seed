@@ -2644,3 +2644,44 @@ test("T013 ?debug=1 附带形状而非上下文原文；开关关闭时不出现
   await route.handler(req2, res2);
   assert.equal(JSON.parse(res2.body)._debug, undefined, "未开开关时不得出现调试字段");
 });
+
+// --------------------------------------------------------------------------
+// T015：五状态的优先级链与呈现约束
+//
+// 说明：客户端组件内部状态由异步响应驱动，而渲染测试用的是极简 React 替身
+// （useState 不产生更新），因此这里断言**产物级不变量**——优先级链、每态的
+// 颜色与动画、条件入口——而不是逐态的真实迁移。链的顺序本身即语义：
+// 调换顺序会让一种状态永久遮住另一种。
+// --------------------------------------------------------------------------
+
+test("T015 五状态优先级链与各态呈现约束", async () => {
+  const source = await readFile(join(root, "lib", "client.js"), "utf8");
+  assert.ok(
+    /busy \? 'busy' : isRevertMode \? 'revert' : declined !== '' \? 'declined' : error !== '' \? 'error' : 'idle'/.test(source),
+    "优先级链必须是 busy > revert > declined > error > idle",
+  );
+  assert.ok(
+    source.includes('.dsh-seed-btn[data-mode="declined"]{color:var(--dsw-alias-label-secondary);}'),
+    "拒绝态必须中性（不是红色——拒绝硬猜是设计内行为）",
+  );
+  assert.ok(
+    source.includes('.dsh-seed-btn[data-mode="error"]{color:var(--dsw-alias-state-error-primary);}'),
+    "错误态必须用 error 色",
+  );
+  assert.ok(
+    source.includes('.dsh-seed-btn[data-mode="revert"]{color:var(--dsw-alias-brand-primary);}'),
+    "可恢复态必须用品牌色",
+  );
+  assert.ok(
+    /data-mode="busy"\][^{]*\{animation:/.test(source),
+    "busy 必须有旋转动画（唯一的持续视觉信号）",
+  );
+  assert.ok(
+    source.includes("if (mode === 'declined' && rejected !== '')"),
+    "查看被拒稿的入口只在拒绝态且确有被拒稿时出现",
+  );
+  assert.ok(
+    source.includes("'data-glow': mode === 'idle' && hasContent ? '1' : '0'"),
+    "微光只在 idle 且有内容时出现",
+  );
+});
