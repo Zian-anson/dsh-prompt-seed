@@ -2981,3 +2981,41 @@ test("T026 陈旧响应必须被丢弃：等待期间用户改过草稿（不变
     h.restore();
   }
 });
+
+test("T027 引用守恒：改写丢掉引用标签 → declined 且不写回（不变量 I1）", async () => {
+  const h = await makeClientHarness({
+    draft: "@src/index.js 帮我看看这个文件",
+    occurrences: [{ label: "@src/index.js" }],
+    // 改写把 @ 去掉，变成纯文本路径——引用结构被静默降级
+    fetchImpl: () =>
+      Promise.resolve({ json: () => Promise.resolve({ ok: true, text: "请检查 src/index.js 的实现，并给出改进建议。" }) }),
+  });
+  try {
+    h.tree.props.onClick();
+    await h.settle();
+    assert.equal(h.tree.props["data-mode"], "declined", "丢引用必须走拒绝态，而不是照常写回");
+    assert.ok(String(h.tree.props.title || "").includes("引用"), "必须说明原因与引用有关，当前：" + String(h.tree.props.title || ""));
+    assert.deepEqual(h.writes, [], "拒绝时绝不能写回，原文保留（I1）");
+  } finally {
+    h.restore();
+  }
+});
+
+test("T027 引用守恒的正例：标签原样保留时正常写回一次", async () => {
+  const h = await makeClientHarness({
+    draft: "@src/index.js 帮我看看这个文件",
+    occurrences: [{ label: "@src/index.js" }],
+    fetchImpl: () =>
+      Promise.resolve({
+        json: () => Promise.resolve({ ok: true, text: "@src/index.js 请检查该文件的导出结构，并给出改进建议。" }),
+      }),
+  });
+  try {
+    h.tree.props.onClick();
+    await h.settle();
+    assert.equal(h.writes.length, 1, "标签保留时必须写回且只写一次");
+    assert.ok(h.writes[0].includes("@src/index.js"), "引用标签必须原样出现在写回内容里");
+  } finally {
+    h.restore();
+  }
+});
