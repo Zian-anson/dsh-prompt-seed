@@ -78,6 +78,19 @@ dsh plugin --profile <name> add \
   https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.3/dsh-prompt-seed-0.9.3.tgz
 ```
 
+> **If that fails with `ERR_PNPM_MISSING_TARBALL_INTEGRITY`**, download the asset and add the file
+> instead — the tarball is the same bytes, and a local path always resolves cleanly:
+>
+> ```sh
+> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.3/dsh-prompt-seed-0.9.3.tgz
+> dsh plugin --profile <name> add ./dsh-prompt-seed-0.9.3.tgz
+> ```
+>
+> The cause is upstream, not in this package: pnpm writes a lockfile entry for an `https`
+> tarball without an `integrity` field and then rejects its own entry on the verification pass.
+> The release asset itself is verified byte-for-byte against the repository by
+> `node tools/verify-release.mjs v0.9.3`.
+
 The npm channel lights up once the package is published there:
 
 ```sh

@@ -55,6 +55,15 @@ dsh plugin --profile <name> add \
   https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.3/dsh-prompt-seed-0.9.3.tgz
 ```
 
+> **如果报 `ERR_PNPM_MISSING_TARBALL_INTEGRITY`**：先下载资产，再按本地路径安装——字节完全相同，本地路径不受该问题影响：
+>
+> ```sh
+> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.3/dsh-prompt-seed-0.9.3.tgz
+> dsh plugin --profile <name> add ./dsh-prompt-seed-0.9.3.tgz
+> ```
+>
+> 成因在上游不在本包：pnpm 为 `https` tarball 依赖写 lockfile 时不写 `integrity` 字段，随后又在复核阶段拒绝自己的条目。发布资产本身与仓库逐字节一致，可用 `node tools/verify-release.mjs v0.9.3` 复核。
+
 发布到 npm 后，这条命令同样可用：
 
 ```sh
