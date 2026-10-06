@@ -2669,7 +2669,7 @@ test("T015 五状态优先级链与各态呈现约束", async () => {
     "错误态必须用 error 色",
   );
   assert.ok(
-    source.includes('.dsh-seed-btn[data-mode="revert"]{color:var(--dsw-alias-brand-primary);}'),
+    /\.dsh-seed-btn\[data-mode="revert"\]\{[^}]*color:var\(--dsw-alias-brand-primary\);[^}]*\}/.test(source),
     "可恢复态必须用品牌色",
   );
   assert.ok(
@@ -2953,6 +2953,22 @@ async function makeClientHarness(options = {}) {
     }
     return null;
   };
+  const visibleLabelText = (node) => {
+    if (node === null || typeof node !== "object") return null;
+    if (node.props?.className === "dsh-opt-label") {
+      return Array.isArray(node.children)
+        ? node.children.filter((child) => typeof child === "string").join("")
+        : "";
+    }
+    const children = [];
+    if (Array.isArray(node.children)) children.push(...node.children);
+    if (Array.isArray(node.props?.children)) children.push(...node.props.children);
+    for (const child of children) {
+      const found = visibleLabelText(child);
+      if (found !== null) return found;
+    }
+    return null;
+  };
   const describe = () => {
     const seen = [];
     const walk = (node, depth) => {
@@ -2971,6 +2987,8 @@ async function makeClientHarness(options = {}) {
     get tree() { return tree; },
     /** 主按钮：revert 态下也用它，而不是假设根节点就是按钮。 */
     primary() { return findByTestId(tree, "prompt-seed-button"); },
+    byTestId(id) { return findByTestId(tree, id); },
+    visibleLabel(node) { return visibleLabelText(node); },
     describe,
     render,
     client,
@@ -3243,15 +3261,30 @@ test("T033 撤销路径：写回回传 applied，撤销回传 reverted 并写回
     await h.settle();
     assert.equal(h.writes.length, 1, "改写已写回");
     assert.equal(h.primary().props["data-mode"], "revert", "成功后进入 revert 态");
+    assert.equal(h.visibleLabel(h.primary()), "原文", "恢复动作必须有移动端可见的“原文”文字，不能只靠 title");
+    assert.ok(h.byTestId("prompt-seed-regenerate"), "第一次优化后必须出现“再来”动作");
+    assert.equal(h.visibleLabel(h.byTestId("prompt-seed-regenerate")), "再来", "“再来”必须直接可见，不能只靠 hover");
+    assert.equal(h.byTestId("prompt-seed-previous"), null, "第一次优化没有上一版，不应显示回退动作");
+
+    // 生成第二版后才出现“上一版”，保持原来的渐进逻辑。
+    h.byTestId("prompt-seed-regenerate").props.onClick();
+    await h.settle();
+    assert.ok(h.byTestId("prompt-seed-previous"), "第二版生成后才应出现“上一版”");
+    assert.equal(h.visibleLabel(h.byTestId("prompt-seed-previous")), "上一版", "回退动作必须直接可见");
+    h.byTestId("prompt-seed-previous").props.onClick();
+    await h.settle();
+    assert.equal(h.byTestId("prompt-seed-previous"), null, "退回第一版后不再有上一版");
+
+    // 主按钮仍恢复原文。
     h.primary().props.onClick();
     await h.settle();
     // 顺序即语义：写回成功 = applied（采纳），撤销 = reverted（补多了）。记反会让自适应深度调错方向。
-    assert.deepEqual(kindsOf(bodies), ["applied", "reverted"], "实际：" + JSON.stringify(kindsOf(bodies)));
+    assert.deepEqual(kindsOf(bodies), ["applied", "applied", "reverted"], "实际：" + JSON.stringify(kindsOf(bodies)));
     const reverted = bodies.filter((b) => b.feedback && b.feedback.kind === "reverted")[0].feedback;
     assert.ok(Number.isFinite(reverted.charsDelta), "charsDelta 必须是数字");
     assert.ok(Number.isFinite(reverted.elapsedMs), "elapsedMs 必须是数字");
-    assert.equal(h.writes.length, 2, "撤销写回原文");
-    assert.equal(h.writes[1], "帮我改一下这个模块", "写回的必须是原文");
+    assert.equal(h.writes.length, 4, "第一版、第二版、回上一版、恢复原文都必须真实写回");
+    assert.equal(h.writes[3], "帮我改一下这个模块", "最后写回的必须是原文");
     assert.equal(h.primary().props["data-mode"], "idle", "撤销后回到 idle");
   } finally {
     h.restore();
