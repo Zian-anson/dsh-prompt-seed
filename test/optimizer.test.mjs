@@ -3423,3 +3423,44 @@ test("确定性守卫必须走中性盾态：input_too_long / empty_input 不是
   assert.equal(empty.mode, "declined", "空输入（curl/脚本路径可达）同样是守卫");
   assert.deepEqual(empty.writes, []);
 });
+
+test("查看被拒版本：显式点击才写回，且写回后可一键撤销", async () => {
+  const original = "帮我把这个模块的导出整理一下";
+  const rejectedText = "请检查该模块的导出结构，重构全部公共接口并补一套基准测试。";
+  const h = await makeClientHarness({
+    draft: original,
+    fetchImpl: () =>
+      Promise.resolve({
+        json: () =>
+          Promise.resolve({
+            ok: false,
+            code: "fidelity_rejected",
+            error: "优化会改变原意，已保留原文",
+            violations: [{ kind: "SCOPE_ADDED", label: "增加了原本没有的要求", text: "重构全部公共接口" }],
+            rejected: rejectedText,
+          }),
+      }),
+  });
+  try {
+    h.primary().props.onClick();
+    await h.settle();
+    assert.equal(h.primary().props["data-mode"], "declined", "被拒后进入中性盾态");
+    assert.deepEqual(h.writes, [], "拒绝路径绝不自动写回（不变量 I1）");
+
+    const eye = h.byTestId("prompt-seed-view-rejected");
+    assert.ok(eye, "declined 且确有被拒稿时必须露出查看入口");
+    eye.props.onClick();
+    await h.settle();
+
+    assert.equal(h.writes.length, 1, "显式点击才写回一次");
+    assert.equal(h.writes[0], rejectedText, "写回的必须是被拒稿原文");
+    assert.equal(h.primary().props["data-mode"], "revert", "查看被拒稿同样可撤销：进入 revert 态");
+
+    h.primary().props.onClick();
+    await h.settle();
+    assert.equal(h.writes.length, 2, "一键撤销写回");
+    assert.equal(h.writes[1], original, "撤销恢复的是查看前的原稿");
+  } finally {
+    h.restore();
+  }
+});
