@@ -804,3 +804,105 @@ export function buildConversationalSystemPrompt(options = {}) {
 export function renderConversationalUserPrompt(input) {
   return `MESSAGE: ${input}\n\nTidy it up under the rules above, or return it unchanged.`;
 }
+
+/**
+ * 自适应契约（0.9.4 起，中间分支的唯一入口）：一次调用先判定输入缺什么，再做对应操作。
+ *
+ * 为什么放弃"其余一切 → 扩展"的确定性默认：真实使用数据（samples.jsonl，22 次点击）
+ * 显示绝大多数输入是"完整但含混"的诉求——用户要的是澄清梳理（约 1×），不是 2~8×
+ * 的扩写；旧默认把两次完整指令扩成了越线稿（被闸门拒绝，用户一无所获），另一次
+ * 45 字完整提问被放行为 339 字。意图分类交给模型（启发式已被证明不行），度约束
+ * 留在代码（声明 clarify 却产出超限 → 确定性拒绝，不劳模型判断）。
+ */
+export const ADAPTIVE_SYSTEM_TEMPLATE = `You rewrite the user's draft for a coding assistant. You never carry out the request itself.
+Decide FIRST what this draft is missing, declare it on the first line, then do exactly that.
+
+The deciding question: is this draft a TASK DESCRIPTION for the agent to carry out, or a
+MESSAGE to the assistant about the conversation itself? A message that reports status, asks
+what to do next, asks whether something is done, or says how to proceed is NEVER a seed — it
+is complete in intent; tidy it (clarify). Only a task description missing the detail the task
+itself implies is a seed. Example: "已重启了，然后需要我做什么" reports status and asks what
+next — MODE: clarify, a tidied one-liner, never an invented checklist.
+
+MODE: seed      — the draft states a goal but omits detail the task itself implies. Unfold that
+                  implied detail: concrete steps, inputs/outputs, edge cases, failure handling.
+                  This is the only mode that may grow the draft substantially.
+MODE: clarify   — the intent is already complete, but the wording is ambiguous, tangled, or
+                  references are unclear. Re-express the SAME intent precisely: resolve what each
+                  reference points to, split run-on sentences, make the ask explicit.
+                  ADD NOTHING: no new requirements, tools, libraries, numbers, files, or scope.
+                  Keep the length close to the original (never more than 1.3x).
+MODE: precise   — the draft already says exactly what is wanted. Return it near-verbatim with
+                  only mechanical fixes (typos, punctuation, spacing).
+
+When unsure between seed and clarify, choose clarify: a tidy restatement of what the user
+actually wrote is always safe; an invented expansion is not.
+The depth instruction below applies ONLY to mode seed. Clarify and precise ignore it.
+
+Hard rules, all modes:
+- First line of output: exactly "MODE: seed" / "MODE: clarify" / "MODE: precise". Then the rewrite.
+- Write in the same language as the draft.
+- Never perform the request, never answer it, never ask questions back.
+- Preserve every identifier, file path, command, and number from the draft verbatim.
+- Never invent identifiers, paths, numbers, or (TBD: ...) placeholders.
+- Output only the MODE line and the rewritten draft. No preamble, no commentary.`;
+
+
+/**
+ * 解析自适应契约的输出：首行 MODE 声明 + 正文。
+ * 缺失或非法声明时回落 seed（旧行为等价：走补全闸与语义审判，审计仍兜底），并打标记
+ * 供遥测观测格式漂移。
+ * @param {string} raw 模型原始输出（已过 normalizeResult）。
+ * @returns {{op: "seed" | "clarify" | "precise", text: string, declared: boolean}}
+ */
+export function parseAdaptiveResult(raw) {
+  const source = String(raw ?? "");
+  const lines = source.split("\n");
+  let index = 0;
+  while (index < lines.length && lines[index].trim() === "") index += 1;
+  if (index >= lines.length) return { op: "seed", text: source, declared: false };
+  const match = lines[index].trim().match(/^MODE\s*:\s*(seed|clarify|precise)\s*$/i);
+  if (!match) return { op: "seed", text: source, declared: false };
+  const rest = lines.slice(index + 1).join("\n").replace(/^\n+/, "");
+  return { op: match[1].toLowerCase(), text: rest, declared: true };
+}
+
+/**
+ * 自适应契约构建器：system.md 覆盖文件继续作用于主改写路径。
+ * 0.9.4 起主契约即自适应契约——覆盖入口不变，承诺不断：放一个 system.md 进
+ * $DSH_HOME/prompt-seed/prompts/ 就替换主改写的 system prompt（含 MODE 规则的责任
+ * 移交给覆盖作者；缺 MODE 行时解析回落 seed，失真闸门照常兜底）。
+ */
+export function buildAdaptiveSystemPrompt(input = "") {
+  const overrides = getTemplateOverrides();
+  const base =
+    typeof overrides?.system === "string" && overrides.system !== ""
+      ? overrides.system
+      : ADAPTIVE_SYSTEM_TEMPLATE;
+  // 与旧主契约同两条部署级保障：覆盖文件只替换正文，硬规则后缀永远追加；
+  // 每请求附带一次语言核对提示（自适应模板已有静态语言规则，这里是逐单强化）。
+  const script = detectScript(input);
+  const hint =
+    script === "cjk"
+      ? "The input is predominantly CJK. Answer in the same CJK language."
+      : script === "latin"
+        ? "The input is predominantly Latin script. Answer in the same language."
+        : script === "mixed"
+          ? "The input mixes scripts. Keep the same natural mix; do not translate."
+          : null;
+  const languageLine = hint === null ? "" : "\n- Language check for this request: " + hint;
+  return base + SYSTEM_SUFFIX + languageLine;
+}
+
+/**
+ * 澄清专用契约（收紧重试用）：不再提供模式选择。
+ * 存在的原因：真实数据表明 glm-5.2 对问句形消息会连续三次坚持 seed 并输出清单
+ * （首稿 7~8×，带收紧后缀的重试 112 字）——重试若仍可自选模式，等于让它推翻
+ * 自己刚做的错误判断。确定性层已裁定 clarify，重试就只执行 clarify。
+ */
+export const CLARIFY_ONLY_SYSTEM = `You re-express the user's draft with the SAME intent and the SAME information, only clearer:
+resolve what each reference points to, split tangled sentences, make the ask explicit.
+This is a clarification, not an expansion: at most 1.3x the original length, usually shorter.
+Add NOTHING the user did not write or clearly imply - no requirements, steps, tools,
+examples, or checklists. Preserve every identifier, path, command, and number verbatim.
+Write in the same language as the draft. Output only the rewritten draft.`;

@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/Zian-anson/dsh-prompt-seed)](https://github.com/Zian-anson/dsh-prompt-seed/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-2ea44f.svg)](https://github.com/topics/dsh-plugin)
-[![tests: 163 passing](https://img.shields.io/badge/tests-163%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 171 passing](https://img.shields.io/badge/tests-171%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin. Type a one-line
 draft, click **✦**, and it is rewritten in place into a prompt an agent can actually act on —
@@ -319,7 +319,7 @@ just installed.
 ## Development
 
 ```sh
-npm test        # builds lib/ then runs 163 tests
+npm test        # builds lib/ then runs 171 tests
 npm run build   # tools/build.mjs → lib/
 ```
 

@@ -430,13 +430,13 @@ test("optimizePromptText 成功路径：清洗后返回", async () => {
     { type: "finish", reason: { kind: "stop" } },
   ]);
   const result = await optimizePromptText({ llm, route: ROUTE, text: "解释代码" });
-  assert.deepEqual(result, { ok: true, text: "请解释这段代码的功能", tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+  assert.deepEqual(result, { ok: true, text: "请解释这段代码的功能", tier: "full", mode: "seed", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
 
   // 请求参数契约
   const sent = llm.seen[0];
   assert.equal(sent.provider, "test");
   assert.equal(sent.model, "test-model");
-  assert.ok(sent.system.includes("You expand prompts for a coding assistant"));
+  assert.ok(sent.system.includes("You rewrite the user's draft for a coding assistant"), "统一走自适应契约");
   assert.equal(sent.messages.length, 1);
   assert.ok(sent.messages[0].content[0].text.includes("解释代码"));
 });
@@ -576,6 +576,7 @@ test("补全闸：种子输入的第一稿实质未变时，补全重跑并回�
     ok: true,
     text: "请检查这个登录接口是否存在问题；如有，指出是什么问题、出现在哪里。",
     tier: "full",
+    mode: "seed",
     gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] },
     detail: "",
   });
@@ -605,7 +606,7 @@ test("补全闸：两次重试温度递增，全部平庸时回填最后一次",
 test("补全闸：已明确输入的第一稿未变时不触发重跑", async () => {
   const input = "删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏";
   const llm = scriptedLlm([
-    textChunks("删除 src/utils/legacy.js 中未被引用的 export，然后跑一遍测试确认没有破坏。"),
+    textChunks("MODE: precise\n删除 src/utils/legacy.js 中未被引用的 export，然后跑一遍测试确认没有破坏。"),
     textChunks("OK"),
   ]);
   const result = await optimizePromptText({ llm, route: ROUTE, text: input });
@@ -613,7 +614,7 @@ test("补全闸：已明确输入的第一稿未变时不触发重跑", async ()
   assert.equal(result.tier, "full");
   // 精确模式 + 近原样 → 连审判一起省掉（P1-5）：只花 1 次调用
   assert.equal(llm.seen.length, 1, "精确输入近原样时跳过审判");
-  assert.ok(llm.seen[0].system.includes("PRECISE-INPUT MODE"));
+  assert.ok(llm.seen[0].system.includes("You rewrite the user's draft for a coding assistant"), "模式由模型声明，契约统一");
 });
 
 test("looksSeedish：短种子/开放式命中，带锚定的明确指令不命中", () => {
@@ -657,9 +658,9 @@ test("无内容输入直接短路：零模型调用，返回中性错误码", as
 test("精确模式近原样时跳过审判：只花一次调用", async () => {
   const input = "把 src/utils/legacy.js 里的 formatDate 改成用 dayjs 实现";
   const same = "把 src/utils/legacy.js 里的 formatDate 改成用 dayjs 实现";
-  const llm = scriptedLlm([textChunks(same), textChunks("OK")]);
+  const llm = scriptedLlm([textChunks("MODE: precise\n" + same), textChunks("OK")]);
   const result = await optimizePromptText({ llm, route: ROUTE, text: input });
-  assert.deepEqual(result, { ok: true, text: same, tier: "full", gate: { verdict: "unverified", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+  assert.deepEqual(result, { ok: true, text: same, tier: "full", mode: "precise", gate: { verdict: "unverified", repairs: 0, rechecked: false, violations: [] }, detail: "" });
   assert.equal(llm.seen.length, 1, "近原样 → 不发起审判");
 });
 
@@ -702,27 +703,26 @@ test("isPreciseInstruction：点名目标+动作的完整指令命中，种子�
 test("精确输入走精确模式：契约整段切换，输出接近原样", async () => {
   const input = "删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏";
   const polished = "删除 src/utils/legacy.js 里未被引用的 export，然后跑一遍测试确认没有破坏现有功能。";
-  const llm = scriptedLlm([textChunks(polished), textChunks("OK")]);
+  const llm = scriptedLlm([textChunks("MODE: precise\n" + polished), textChunks("OK")]);
   const result = await optimizePromptText({ llm, route: ROUTE, text: input });
 
-  assert.deepEqual(result, { ok: true, text: polished, tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+  assert.deepEqual(result, { ok: true, text: polished, tier: "full", mode: "precise", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
   assert.equal(llm.seen.length, 2, "精确输入不触发补全闸");
-  assert.ok(llm.seen[0].system.includes("PRECISE-INPUT MODE"), "system 必须切换到精确模式");
-  assert.ok(!llm.seen[0].system.includes("ELABORATE, NEVER DISTORT") === false, "基础契约仍在（模式是追加覆盖）");
+  assert.ok(llm.seen[0].system.includes("You rewrite the user's draft for a coding assistant"), "统一入口：自适应契约");
+  assert.ok(llm.seen[0].system.includes("near-verbatim"), "自适应契约保留近原样通道（MODE: precise）");
   const userPrompt = llm.seen[0].messages[0].content[0].text;
-  assert.ok(userPrompt.includes("already precise and complete"), "user 侧也要声明精确模式");
-  assert.ok(userPrompt.includes("Do not add procedures"), "user 侧必须点名禁止加步骤");
+  assert.ok(userPrompt.includes(input), "user 侧携带原始草稿，模式选择在 system 侧完成");
 });
 
 test("种子输入不得走精确模式（否则会压住该有的补全）", async () => {
   const input = "帮我做个导出报表的功能";
   const fat = "帮我做一个导出报表功能：可以选择导出的时间范围和统计维度，支持导出 CSV 和 Excel，数据量大时显示进度。";
-  const llm = scriptedLlm([textChunks(fat), textChunks("OK")]);
+  const llm = scriptedLlm([textChunks("MODE: seed\n" + fat), textChunks("OK")]);
   const result = await optimizePromptText({ llm, route: ROUTE, text: input });
 
   assert.equal(result.ok, true);
-  assert.ok(!llm.seen[0].system.includes("PRECISE-INPUT MODE"), "种子必须走补全契约");
-  assert.ok(llm.seen[0].system.includes("ELABORATE, NEVER DISTORT"));
+  assert.ok(llm.seen[0].system.includes("MODE: seed"), "契约必须定义种子通道（补全）");
+  assert.ok(llm.seen[0].system.includes("Unfold"), "种子通道保留补全语义");
 });
 
 test("审判报 PADDED：精确输入被加戏时定向修复，绝不回填加戏稿", async () => {
@@ -730,7 +730,7 @@ test("审判报 PADDED：精确输入被加戏时定向修复，绝不回填加�
   const padded = "删除 src/utils/legacy.js 里未被引用的 export：先在全仓库搜索每个 export 的引用，确认没有动态引用后再删；删完跑测试，失败就回退并说明原因。";
   const fixed = "删除 src/utils/legacy.js 里未被引用的 export，然后跑一遍测试确认没有破坏现有功能。";
   const llm = scriptedLlm([
-    textChunks(padded),
+    textChunks("MODE: precise\n" + padded),
     textChunks("PADDED: 加了搜索引用的步骤\nPADDED: 加了失败回退条款"),
     textChunks(fixed),
     textChunks("OK"),
@@ -741,6 +741,7 @@ test("审判报 PADDED：精确输入被加戏时定向修复，绝不回填加�
     ok: true,
     text: fixed,
     tier: "repaired",
+    mode: "precise",
     gate: {
       verdict: "repaired",
       repairs: 1,
@@ -834,11 +835,11 @@ test("审判通过：正常回填，改写与审计调用均轻量", async () =>
     textChunks("OK"),
   ]);
   const result = await optimizePromptText({ llm, route: { ...ROUTE, reasoningEffort: "high" }, text: "帮我看看这个接口有没有问题" });
-  assert.deepEqual(result, { ok: true, text: "请检查这个接口是否存在问题", tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+  assert.deepEqual(result, { ok: true, text: "请检查这个接口是否存在问题", tier: "full", mode: "seed", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
 
   assert.equal(llm.seen.length, 2, "改写 + 审判恰好两次调用");
   const [rewriteCall, auditCall] = llm.seen;
-  assert.ok(rewriteCall.system.includes("You expand prompts for a coding assistant"));
+  assert.ok(rewriteCall.system.includes("You rewrite the user's draft for a coding assistant"), "自适应契约");
   assert.equal(rewriteCall.reasoningEffort, undefined, "改写不透传 reasoningEffort（max 推理是方差源）");
   assert.ok(auditCall.system.includes("strict auditor"));
   assert.equal(auditCall.reasoningEffort, undefined, "审判不透传 reasoningEffort，保持轻量");
@@ -861,6 +862,7 @@ test("审判报失真：定向修复保留已补细节，只摘越线处，二�
     ok: true,
     text: "请检查这个登录接口是否存在问题；如有，指出是什么问题、出现在哪里。",
     tier: "repaired",
+    mode: "seed",
     gate: {
       verdict: "repaired",
       repairs: 1,
@@ -952,7 +954,7 @@ test("审判报 THIN：种子输入补全一次并重新审判，补全稿通过
     textChunks("OK"),
   ]);
   const result = await optimizePromptText({ llm, route: ROUTE, text: input });
-  assert.deepEqual(result, { ok: true, text: fat, tier: "elaborated", gate: { verdict: "ok", repairs: 0, rechecked: true, violations: [] }, detail: "" });
+  assert.deepEqual(result, { ok: true, text: fat, tier: "elaborated", mode: "seed", gate: { verdict: "ok", repairs: 0, rechecked: true, violations: [] }, detail: "" });
   assert.equal(llm.seen.length, 4);
   assert.equal(llm.seen[2].temperature, 0.5, "补全重试带温度扰动（零温度重跑只会再薄一次）");
   assert.ok(llm.seen[2].system.includes("ELABORATION MODE"));
@@ -969,7 +971,7 @@ test("THIN 补全后引入失真：回退薄但忠实的第一稿，绝不回填
     textChunks("SCOPE_ADDED: CDN 分发\nSCOPE_ADDED: 压缩率报表"),
   ]);
   const result = await optimizePromptText({ llm, route: ROUTE, text: input });
-  assert.deepEqual(result, { ok: true, text: thin, tier: "thin", gate: { verdict: "thin", repairs: 0, rechecked: false, violations: [] }, detail: "" }, "宁可薄而忠实，不可厚而曲解");
+  assert.deepEqual(result, { ok: true, text: thin, tier: "thin", mode: "seed", gate: { verdict: "thin", repairs: 0, rechecked: false, violations: [] }, detail: "" }, "宁可薄而忠实，不可厚而曲解");
   assert.equal(llm.seen.length, 4);
 });
 
@@ -982,7 +984,7 @@ test("审判报 THIN 但输入已明确：不补全（误报不得把明确指�
     textChunks("THIN: 没有补充细节"),
   ]);
   const result = await optimizePromptText({ llm, route: ROUTE, text: input });
-  assert.deepEqual(result, { ok: true, text: rewrite, tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+  assert.deepEqual(result, { ok: true, text: rewrite, tier: "full", mode: "seed", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
   assert.equal(llm.seen.length, 2, "已明确输入不因 THIN 误报而重跑");
 });
 
@@ -992,7 +994,7 @@ test("审判调用失败：fail-open 接受改写（闸门是纵深防御而非�
     [{ type: "finish", reason: { kind: "error", failure: { code: "boom", message: "audit down" } } }],
   ]);
   const result = await optimizePromptText({ llm, route: ROUTE, text: "帮我看看这个接口有没有问题" });
-  assert.deepEqual(result, { ok: true, text: "请检查这个接口是否存在问题", tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+  assert.deepEqual(result, { ok: true, text: "请检查这个接口是否存在问题", tier: "full", mode: "seed", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
 });
 
 test("审判输出无法解析：fail-open 接受改写", async () => {
@@ -1001,7 +1003,7 @@ test("审判输出无法解析：fail-open 接受改写", async () => {
     textChunks("这段改写保持了一致性，整体质量不错"),
   ]);
   const result = await optimizePromptText({ llm, route: ROUTE, text: "帮我看看这个接口有没有问题" });
-  assert.deepEqual(result, { ok: true, text: "请检查这个接口是否存在问题", tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+  assert.deepEqual(result, { ok: true, text: "请检查这个接口是否存在问题", tier: "full", mode: "seed", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
 });
 
 test("审判误报失真：定向修复稿被采纳，绝不因为一次误报就拒绝", async () => {
@@ -1155,7 +1157,7 @@ test("Host 路由：回环放行、非法来源拒绝、方法与非 JSON 体各
   const ok = makeResponse();
   await route.handler(makeRequest({ body: JSON.stringify({ text: "解释代码" }) }), ok);
   assert.equal(ok.statusCode, 200);
-  assert.deepEqual(JSON.parse(ok.body), { ok: true, text: "改写结果", tier: "full", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
+  assert.deepEqual(JSON.parse(ok.body), { ok: true, text: "改写结果", tier: "full", mode: "seed", gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] }, detail: "" });
 
   // 空输入仍然 200，但带业务错误码
   const empty = makeResponse();
@@ -1366,7 +1368,7 @@ test("每次优化都落盘：不只记拒绝，带 tier/mode/长度/耗时", as
     const webServer = makeWebServer();
     host.apply(
       makeHostContext(webServer, {
-        responses: [textChunks("删除 src/utils/legacy.js 中未被引用的 export，然后跑测试确认没有破坏。"), textChunks("OK")],
+        responses: [textChunks("MODE: precise\n删除 src/utils/legacy.js 中未被引用的 export，然后跑测试确认没有破坏。"), textChunks("OK")],
       }),
       { samples: file },
     );
@@ -1774,7 +1776,7 @@ test("F 模板覆盖：从 $DSH_HOME 读取，改完立刻生效（不必重启�
     llm.seen.length = 0;
     const res3 = makeResponse();
     await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "帮我看看这段代码" }) }), res3);
-    assert.ok(llm.seen[0].system.startsWith(SYSTEM_TEMPLATE.slice(0, 40)), "文件缺失即回落内置");
+    assert.ok(llm.seen[0].system.includes("You rewrite the user's draft for a coding assistant"), "文件缺失即回落内置（0.9.4 起内置主契约为自适应契约）");
     setTemplateOverrides(null);
   } finally {
     if (previous === undefined) delete process.env.DSH_HOME;
@@ -1833,7 +1835,7 @@ test("D 深度档位非法值安全降级为标准档（旧客户端兼容）", 
   await optimizePromptText({ llm, route: ROUTE, text: "帮我做个导出报表的功能", depth: "ultra" });
   // 非法值 → 标准档 → 无后缀：system prompt 里不该出现任何 DEPTH 块
   assert.ok(!llm.seen[0].system.includes("DEPTH - "), "非法值必须降级到不加后缀的基线");
-  assert.equal(llm.seen[0].system, buildSystemPromptFor("帮我做个导出报表的功能"));
+  assert.equal(llm.seen[0].system, buildAdaptiveSystemPrompt("帮我做个导出报表的功能"), "非法深度降级 = 自适应基线不加后缀");
 });
 
 test("codeVersion 报的是本进程加载的代码版本，不是磁盘上的 package.json", async () => {
@@ -3463,4 +3465,112 @@ test("查看被拒版本：显式点击才写回，且写回后可一键撤销",
   } finally {
     h.restore();
   }
+});
+
+// --------------------------------------------------------------------------
+// 自适应契约（0.9.4）：一次点击，插件自己选操作（seed / clarify / precise）
+// --------------------------------------------------------------------------
+
+import { buildAdaptiveSystemPrompt, parseAdaptiveResult } from "../src/prompt-templates.js";
+
+test("parseAdaptiveResult：MODE 声明解析、缺失回落 seed", () => {
+  assert.deepEqual(parseAdaptiveResult("MODE: clarify\n已重启完成。下一步做什么？"), { op: "clarify", text: "已重启完成。下一步做什么？", declared: true });
+  assert.deepEqual(parseAdaptiveResult("MODE: Precise\n原文"), { op: "precise", text: "原文", declared: true }, "大小写不敏感");
+  assert.deepEqual(parseAdaptiveResult("没有声明"), { op: "seed", text: "没有声明", declared: false });
+  assert.deepEqual(parseAdaptiveResult("MODE: 自由发挥\n随意"), { op: "seed", text: "MODE: 自由发挥\n随意", declared: false }, "非法声明原样保留正文");
+});
+
+test("自适应·澄清：完整但含混的输入得到梳理而不是扩写（真实回归输入）", async () => {
+  // 来自 samples.jsonl 的真实形态：完整意图 + 指代含混（非问句形——问句形已由
+  // 会话分支接走，见上）。旧契约会把这类输入扩成 4~8×。
+  const input = "帮我看看那个东西能不能用，就是昨天说的那个导出";
+  const llm = scriptedLlm([
+    textChunks("MODE: clarify\n看看昨天说的那个导出功能现在能不能用。"),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "clarify");
+  assert.equal(result.tier, "full");
+  assert.ok(result.text.length <= Math.ceil(input.length * 1.3), "澄清不得显著变长");
+  assert.equal(llm.seen.length, 2, "改写 + 审判两次调用");
+  assert.ok(llm.seen[0].system.includes("You rewrite the user's draft"), "走自适应契约");
+});
+
+test("自适应·澄清超度：一次收紧重试，仍超限则确定性拒绝（不劳审判）", async () => {
+  const input = "帮我看看那个东西能不能用，就是昨天说的那个导出";
+  const bloated = "请检查昨天讨论的那个导出功能当前是否可用：先确认入口有没有上线，再分别试小数据量和大数据量两种导出，核对文件内容与格式是否正确，失败时记录报错信息并汇总成一份可用性结论。";
+  const llm = scriptedLlm([
+    textChunks("MODE: clarify\n" + bloated),
+    textChunks("MODE: clarify\n" + bloated), // 收紧重试仍超限
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, ERROR_CODES.FIDELITY_REJECTED);
+  assert.equal(result.violations[0].label, "澄清超度");
+  assert.equal(typeof result.rejected, "string", "被拒稿随结果回传供显式查看");
+  assert.equal(llm.seen.length, 2, "两次改写后确定性拒绝，审判根本不跑");
+  assert.ok(llm.seen[1].system.includes("at most 1.3x"), "重试必须带收紧指令");
+});
+
+test("自适应·澄清丢锚定词：确定性拒绝（指代理顺不得改写路径/标识符）", async () => {
+  const input = "把 src/utils/legacy.js 里的导出删掉，跑测试确认没破坏";
+  const llm = scriptedLlm([
+    textChunks("MODE: clarify\n删除 src/utils/legacy.ts 中的导出，然后运行测试确认无破坏。"), // 路径被改写
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, ERROR_CODES.FIDELITY_REJECTED);
+  assert.equal(result.violations[0].label, "锚定词丢失");
+  assert.equal(llm.seen.length, 1, "确定性拒绝，零额外调用");
+});
+
+test("自适应·缺失 MODE 声明：回落 seed，行为与旧补全路径等价", async () => {
+  const llm = scriptedLlm([
+    textChunks("请检查这个登录接口是否存在问题；如有，指出是什么问题。"),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: "帮我看看这个登录接口有没有问题" });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "seed", "未声明时回落 seed（旧默认行为）");
+  assert.equal(result.tier, "full");
+});
+
+test("自适应·system.md 覆盖继续作用于主改写路径", async () => {
+  setTemplateOverrides({ system: "ADAPTIVE OVERRIDE MARKER" });
+  try {
+    const llm = scriptedLlm([textChunks("MODE: seed\n覆盖下的补全稿。"), textChunks("OK")]);
+    const result = await optimizePromptText({ llm, route: ROUTE, text: "帮我做个导出功能" });
+    assert.equal(result.ok, true);
+    assert.ok(llm.seen[0].system.startsWith("ADAPTIVE OVERRIDE MARKER"), "覆盖文件替换自适应契约正文");
+    assert.ok(llm.seen[0].system.includes("ADDITIONAL HARD RULES FOR THIS DEPLOYMENT"), "覆盖不能冲掉部署级硬规则");
+  } finally {
+    setTemplateOverrides(null);
+  }
+  assert.ok(buildAdaptiveSystemPrompt().includes("You rewrite the user's draft"), "归还后回落内置");
+});
+
+test("问句形短消息路由到会话分支：1.0× 轻润色，绝不扩成清单（真实回归）", async () => {
+  // 真实数据：glm-5.2 对「已重启了，然后需要我做什么」在扩展契约下扩成 7~8×，
+  // 自适应契约下仍执意 seed（连专用澄清契约都拦不住 130 字清单）——这类
+  // 「发给助手的消息」本就该由会话分支接走，界由代码划。
+  const input = "已重启了，然后需要我做什么";
+  const llm = scriptedLlm([textChunks("已重启了，然后我需要做什么？")]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "conversational", "问句形短消息 → 会话分支");
+  assert.ok(result.text.length <= Math.ceil(input.length * 1.35) + 6, "轻润色上限");
+  assert.equal(llm.seen.length, 1, "单次调用，无审判无重试");
+  assert.ok(llm.seen[0].system.includes("conversational message"), "走会话契约");
+});
+
+test("自适应·问句否决不误伤：无问号的任务种子仍走补全", async () => {
+  const input = "帮我做个导出报表的功能"; // 无问号、无锚定：种子，不受否决影响
+  const llm = scriptedLlm([
+    textChunks("MODE: seed\n帮我做一个导出报表功能：可选时间范围与统计维度，导出 CSV 与 Excel，数据量大时显示进度。"),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "seed", "无问号种子不受问句否决影响");
 });

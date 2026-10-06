@@ -402,7 +402,8 @@ export function apply(ctx, config = {}) {
               event: "optimize",
               code: result.ok ? "ok" : result.code,
               tier: result.ok ? result.tier : null,
-              mode: describeMode(text) ?? (isPreciseInstruction(text) ? "precise" : "elaborate"),
+              // 遥测用管线里真实的操作判定；旧路径（启发式重猜）只作兜底。
+              mode: result.mode ?? describeMode(text) ?? (isPreciseInstruction(text) ? "precise" : "elaborate"),
               // 调用来源：界面点击（带 sessionId）还是脚本直接打路由（不带）。
               // 没有这个字段时，验证脚本的几百次探针会和真实使用混在一条日志里——
               // 实测一次全量验证就写进 159 条固定输入，把"深度合不合适"这类
