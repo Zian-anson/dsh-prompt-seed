@@ -2953,6 +2953,22 @@ async function makeClientHarness(options = {}) {
     }
     return null;
   };
+  const visibleLabelText = (node) => {
+    if (node === null || typeof node !== "object") return null;
+    if (node.props?.className === "dsh-opt-label") {
+      return Array.isArray(node.children)
+        ? node.children.filter((child) => typeof child === "string").join("")
+        : "";
+    }
+    const children = [];
+    if (Array.isArray(node.children)) children.push(...node.children);
+    if (Array.isArray(node.props?.children)) children.push(...node.props.children);
+    for (const child of children) {
+      const found = visibleLabelText(child);
+      if (found !== null) return found;
+    }
+    return null;
+  };
   const describe = () => {
     const seen = [];
     const walk = (node, depth) => {
@@ -2972,6 +2988,7 @@ async function makeClientHarness(options = {}) {
     /** 主按钮：revert 态下也用它，而不是假设根节点就是按钮。 */
     primary() { return findByTestId(tree, "prompt-seed-button"); },
     byTestId(id) { return findByTestId(tree, id); },
+    visibleLabel(node) { return visibleLabelText(node); },
     describe,
     render,
     client,
@@ -3244,16 +3261,16 @@ test("T033 撤销路径：写回回传 applied，撤销回传 reverted 并写回
     await h.settle();
     assert.equal(h.writes.length, 1, "改写已写回");
     assert.equal(h.primary().props["data-mode"], "revert", "成功后进入 revert 态");
-    assert.ok(JSON.stringify(h.primary()).includes("原文"), "恢复动作必须有移动端可见的“原文”文字，不能只靠 title");
+    assert.equal(h.visibleLabel(h.primary()), "原文", "恢复动作必须有移动端可见的“原文”文字，不能只靠 title");
     assert.ok(h.byTestId("prompt-seed-regenerate"), "第一次优化后必须出现“再来”动作");
-    assert.ok(JSON.stringify(h.byTestId("prompt-seed-regenerate")).includes("再来"), "“再来”必须直接可见，不能只靠 hover");
+    assert.equal(h.visibleLabel(h.byTestId("prompt-seed-regenerate")), "再来", "“再来”必须直接可见，不能只靠 hover");
     assert.equal(h.byTestId("prompt-seed-previous"), null, "第一次优化没有上一版，不应显示回退动作");
 
     // 生成第二版后才出现“上一版”，保持原来的渐进逻辑。
     h.byTestId("prompt-seed-regenerate").props.onClick();
     await h.settle();
     assert.ok(h.byTestId("prompt-seed-previous"), "第二版生成后才应出现“上一版”");
-    assert.ok(JSON.stringify(h.byTestId("prompt-seed-previous")).includes("上一版"), "回退动作必须直接可见");
+    assert.equal(h.visibleLabel(h.byTestId("prompt-seed-previous")), "上一版", "回退动作必须直接可见");
     h.byTestId("prompt-seed-previous").props.onClick();
     await h.settle();
     assert.equal(h.byTestId("prompt-seed-previous"), null, "退回第一版后不再有上一版");
