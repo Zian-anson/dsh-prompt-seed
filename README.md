@@ -8,10 +8,12 @@
 [![topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-2ea44f.svg)](https://github.com/topics/dsh-plugin)
 [![tests: 171 passing](https://img.shields.io/badge/tests-171%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin. Type a one-line
-draft, click **✦**, and it is rewritten in place into a prompt an agent can actually act on —
-**unfolding the intermediate detail you did not write down**, while a semantic fidelity gate makes
-sure the meaning and the tone survive. Click **↺** to get your original back.
+A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin. Type a rough
+draft, click **✦**, and it is rewritten in place — **the plugin picks the operation**: a true
+seed is **unfolded** into a prompt an agent can act on, a complete-but-messy draft is
+**clarified** at about the same length, an already-precise instruction passes through
+near-verbatim. A semantic fidelity gate makes sure the meaning survives every path. Click **↺**
+to get your original back.
 
 ```
 make an image compression feature
@@ -46,6 +48,7 @@ did not write. This plugin does the opposite thing on purpose: a one-line seed i
 | on a violation | accept, or reject outright | **targeted repair by violation class**, re-audited; only reject if it still distorts |
 | what you see | a length ratio | **a gate credential**: fidelity ✓ · +150 chars · filled in: edge cases, failure handling |
 | not happy with the result | revert and click again | **✦ regenerate** (keeps up to 3 versions) and **‹ step back** |
+| complete but tangled draft | reworded, sometimes padded | **clarified at about the same length** — same intent, references resolved, nothing added (hard 1.5x cap) |
 
 `PADDED` (padding a request that was already complete) and `TONE_SHIFTED` (a request rewritten into
 a different register) have no counterpart in any of the plugins surveyed — a string-equality check
@@ -78,21 +81,21 @@ Install the released tarball (works today, pinned by version):
 
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.3/dsh-prompt-seed-0.9.3.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.4/dsh-prompt-seed-0.9.4.tgz
 ```
 
 > **If that fails with `ERR_PNPM_MISSING_TARBALL_INTEGRITY`**, download the asset and add the file
 > instead — the tarball is the same bytes, and a local path always resolves cleanly:
 >
 > ```sh
-> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.3/dsh-prompt-seed-0.9.3.tgz
+> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.4/dsh-prompt-seed-0.9.4.tgz
 > dsh plugin --profile <name> add ./dsh-prompt-seed-0.9.3.tgz
 > ```
 >
 > The cause is upstream, not in this package: pnpm writes a lockfile entry for an `https`
 > tarball without an `integrity` field and then rejects its own entry on the verification pass.
 > The release asset itself is verified byte-for-byte against the repository by
-> `node tools/verify-release.mjs v0.9.3`.
+> `node tools/verify-release.mjs v0.9.4`.
 
 The npm channel lights up once the package is published there:
 
@@ -163,12 +166,16 @@ Two halves, one package:
 │   ctx.webServer.register({ kind: 'exact', path, handler })│
 │   loopback-only (peer address AND Host header)           │
 │                                                          │
-│   CONTRACT: elaborate, never distort                     │
+│   CONTRACT: adaptive — one call, three operations         │
 │   ① rewrite call      ctx.get('llm').stream(...)         │
-│        │                fills in the intermediate detail  │
-│        │                the user could not write          │
-│   ② elaboration gate  deterministic: substantively        │
-│        │                unchanged? → retry at temp .4/.7  │
+│        │  model declares MODE first, then does it:       │
+│        │    seed    → unfold the implied detail          │
+│        │    clarify → same meaning, tidied, ≤1.5x cap    │
+│        │    precise → near-verbatim pass-through         │
+│   ② budget gates      deterministic, not model judgement: │
+│        │  clarify >1.5x → one clarify-only retry →       │
+│        │  still over → rejected; anchors lost → rejected │
+│        │  seed + unchanged → retry at temp .4/.7         │
 │   ③ distortion audit  2nd cheap call, semantic rule:      │
 │        │                OK | DISTORTED | SCOPE_ADDED |    │
 │        │                CONTRADICTED | TONE_SHIFTED | THIN│
@@ -227,7 +234,8 @@ half is a compiled bundle, so the two must be changed together. A test asserts t
 | `templates` | `true` | allow `$DSH_HOME/prompt-seed/prompts/*.md` to override the built-in prompts |
 
 **Depth** is a client-side setting (right-click the ✦ button): `auto` (from local feedback counts),
-`light`, `standard`, `deep`. It is not a row config key because it is per-user, not per-profile.
+`light`, `standard`, `deep`. It shapes how much a **seed** is unfolded — clarify and precise
+ignore it. It is not a row config key because it is per-user, not per-profile.
 
 **Prompt overrides**: drop `system.md`, `user.md`, `audit.md`, `signal.md`, `deictic.md` or
 `conversational.md` into
@@ -328,7 +336,7 @@ Source layout:
 | Path | Role |
 |---|---|
 | `src/prompt-templates.js` | the meta-prompt asset, output normalization, input validation |
-| `src/host-core.js` | route resolution, `llm.stream` consumption, error normalization, signal/deictic branches |
+| `src/host-core.js` | route resolution, `llm.stream` consumption, error normalization, adaptive/branch routing |
 | `src/signal-inference.js` | deterministic classification, anchor inference, degree checks for signals and short directives |
 | `src/session-context.js` | on-demand extraction of recent user turns from the session surface |
 | `src/sample-log.js` | the local event log (samples.jsonl) |
@@ -371,6 +379,7 @@ clean clone.
 | Prompt asset, normalization, validation, error codes | unit tests | ✅ |
 | Contract guard (both historical pathologies absent, counter-example triplets present) | template-content tests | ✅ |
 | Rewrite pipeline: elaboration gate, semantic audit, targeted repair, call budget | scripted multi-call `llm` stubs | ✅ |
+| Adaptive contract: MODE declaration, clarify budget + anchor rules, question routing, override continuity | unit + pipeline tests + live-model probes (glm-5.2: seed 10.2x / question 1.0x / precise 1.17x) | ✅ |
 | Gate credential: `DETAIL` parsing, `gate.verdict` / `rechecked` / `repairs` | unit tests | ✅ |
 | Depth: three suffixes, request wiring, invalid-value fallback | unit tests | ✅ |
 | On-demand context: anaphora / short-draft / precise-input rules | unit + route tests | ✅ |
@@ -396,13 +405,13 @@ clean clone.
    and a conservation guard refuses the write-back if any chip label would be lost. The reference
    itself is never dropped silently; its structure is.
 2. UI strings are Chinese-only; the `locale` service is not wired.
-3. Non-streaming, and the call budget depends on which contract the input lands in:
-   **1** for a bare signal (no audit — the expansion is anchored, not judged); **1** when the
-   precise-input shortcut applies (the audit is skipped); **1–2** for a short directive or a
-   conversational message (one draft, plus one tightened retry if the degree rules or the length cap
-   are broken); **2** on the elaboration happy path; **4** when a repair is needed (the repaired draft
-   is always re-audited). Measured 0.9 s (precise input, audit skipped) to ~20 s (worst case, slow
-   provider).
+3. Non-streaming, and the call budget depends on which path the input takes:
+   **1** for a bare signal (anchored, not judged), a conversational message, a question-shaped
+   short message, or a declared `precise` rewrite kept near-verbatim (audit skipped);
+   **1–2** for a short directive (one draft, plus one tightened retry);
+   **2–3** for `clarify` (draft + audit, plus one clarify-only retry if over budget);
+   **2–4** for `seed` (draft + audit, unfold retry, or a repair that is always re-audited).
+   Measured 0.9 s (near-verbatim pass-through) to ~20 s (worst case, slow provider).
 4. `TONE_SHIFTED` and `PADDED` are judgement calls by the audit model, not deterministic checks —
    a misjudgement inside the tolerance band is the residual fidelity risk.
 5. The audit judge and the rewriter share the routed model by default; routing the audit to a

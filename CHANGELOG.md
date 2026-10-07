@@ -9,6 +9,36 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-07
+
+### Added
+
+- **One click picks the operation.** The middle branch ran one adaptive contract: the model
+  declares a mode first - `seed` (unfold the implied detail), `clarify` (same meaning, tidied,
+  hard 1.5x length cap), `precise` (near-verbatim) - then performs it. This came out of real
+  usage data: of 22 actual clicks, most inputs were complete-but-messy drafts that the old
+  everything-else-expands default turned into 2-8x rewrites; two were rejected outright and one
+  45-character question came back as 339 characters. Verification stays deterministic: clarify
+  budgets and anchor conservation are enforced in code, the fidelity audit is unchanged, and
+  assistant-question messages (short, no code anchors, asking what to do next) route to the
+  conversational branch because the live model insisted on expanding them through three prompt
+  variants. Every result now records the chosen mode, so routing quality is measurable.
+- **Post-optimize actions are visible.** The revert button carries a 原文 label and the
+  regenerate / step-back buttons carry text instead of bare icons (contributed in #1).
+
+### Fixed
+
+- **Deterministic guards render as refusals, not failures.** `input_too_long` and `empty_input`
+  now take the neutral declined state, matching `nothing_to_optimize` - a guard the user can
+  act on is not a crash.
+
+### Changed
+
+- The `system.md` override now replaces the adaptive main contract (hard rules still appended,
+  per-request language check still added); depth applies to the seed path only.
+- Removed the `stale` and `unknown` error codes - declared with messages since 0.8.1, never
+  produced by any code path.
+
 ## [0.9.3] - 2026-10-05
 
 ### Fixed

@@ -55,13 +55,13 @@
 
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.3/dsh-prompt-seed-0.9.3.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.4/dsh-prompt-seed-0.9.4.tgz
 ```
 
 > **如果报 `ERR_PNPM_MISSING_TARBALL_INTEGRITY`**：先下载资产，再按本地路径安装——字节完全相同，本地路径不受该问题影响：
 >
 > ```sh
-> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.3/dsh-prompt-seed-0.9.3.tgz
+> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.4/dsh-prompt-seed-0.9.4.tgz
 > dsh plugin --profile <name> add ./dsh-prompt-seed-0.9.3.tgz
 > ```
 >
@@ -85,7 +85,9 @@ dsh --profile <name>
 ## 使用方法
 
 1. 随手输入一行草稿——有错别字也没关系。
-2. 点 **✦**，等 1–6 秒，草稿原地替换，不弹窗。
+2. 点 **✦**，等 1–6 秒，草稿原地替换，不弹窗。**插件自己选操作**（0.9.4）：真种子
+   补全展开；完整但含混的草稿按原长度**澄清梳理**（同义、理顺指代、不加内容，
+   硬上限 1.5×）；已精确的指令近原样通过。不用选模式，一次点击对任何输入都给合理结果。
 3. 悬停 **↺** 读凭证：保真判定、字数变化、补全了什么。
 4. 不满意？**✦** 再来一版，**‹** 回上一版，**↺** 恢复原文；自己编辑过草稿则撤销自动失效。
 
@@ -104,7 +106,7 @@ dsh --profile <name>
 | 路径 | 职责 |
 |---|---|
 | `src/prompt-templates.js` | 提示词契约资产、输出归一化、输入校验 |
-| `src/host-core.js` | 路由解析、`llm.stream` 消费、错误归一化、信号/短指令分支 |
+| `src/host-core.js` | 路由解析、`llm.stream` 消费、错误归一化、自适应契约与各分支路由 |
 | `src/signal-inference.js` | 信号分类、锚点推断、度校验（全确定性纯函数） |
 | `src/session-context.js` | 按需提取最近用户话轮 |
 | `src/sample-log.js` | 本地事件日志（samples.jsonl） |
