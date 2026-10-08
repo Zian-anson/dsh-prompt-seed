@@ -3497,32 +3497,33 @@ test("自适应·澄清：完整但含混的输入得到梳理而不是扩写（
   assert.ok(llm.seen[0].system.includes("You rewrite the user's draft"), "走自适应契约");
 });
 
-test("自适应·澄清超度：一次收紧重试，仍超限则确定性拒绝（不劳审判）", async () => {
+test("自适应·澄清超度：收紧重试仍超限 → 会话兜底，绝不空手而归", async () => {
   const input = "帮我看看那个东西能不能用，就是昨天说的那个导出";
   const bloated = "请检查昨天讨论的那个导出功能当前是否可用：先确认入口有没有上线，再分别试小数据量和大数据量两种导出，核对文件内容与格式是否正确，失败时记录报错信息并汇总成一份可用性结论。";
   const llm = scriptedLlm([
     textChunks("MODE: clarify\n" + bloated),
     textChunks("MODE: clarify\n" + bloated), // 收紧重试仍超限
+    textChunks("帮我看看那个东西（昨天说的导出）现在能不能用。"), // 会话兜底稿
   ]);
   const result = await optimizePromptText({ llm, route: ROUTE, text: input });
-  assert.equal(result.ok, false);
-  assert.equal(result.code, ERROR_CODES.FIDELITY_REJECTED);
-  assert.equal(result.violations[0].label, "澄清超度");
-  assert.equal(typeof result.rejected, "string", "被拒稿随结果回传供显式查看");
-  assert.equal(llm.seen.length, 2, "两次改写后确定性拒绝，审判根本不跑");
+  assert.equal(result.ok, true, "硬拒绝会把用户晾在原地——真实数据里两条祈使消息撞进过这条路");
+  assert.equal(result.mode, "conversational", "兜底走会话分支");
+  assert.ok(result.text.length <= Math.ceil(input.length * 1.35) + 6, "兜底遵守轻润色上限");
+  assert.equal(llm.seen.length, 3, "改写 + 收紧重试 + 会话兜底");
   assert.ok(llm.seen[1].system.includes("at most 1.3x"), "重试必须带收紧指令");
 });
 
-test("自适应·澄清丢锚定词：确定性拒绝（指代理顺不得改写路径/标识符）", async () => {
+test("自适应·澄清丢锚定词：会话兜底（原文为底，锚定词天然保全）", async () => {
   const input = "把 src/utils/legacy.js 里的导出删掉，跑测试确认没破坏";
   const llm = scriptedLlm([
     textChunks("MODE: clarify\n删除 src/utils/legacy.ts 中的导出，然后运行测试确认无破坏。"), // 路径被改写
+    textChunks("把 src/utils/legacy.js 里的导出删掉，然后跑测试确认没破坏。"), // 会话兜底稿
   ]);
   const result = await optimizePromptText({ llm, route: ROUTE, text: input });
-  assert.equal(result.ok, false);
-  assert.equal(result.code, ERROR_CODES.FIDELITY_REJECTED);
-  assert.equal(result.violations[0].label, "锚定词丢失");
-  assert.equal(llm.seen.length, 1, "确定性拒绝，零额外调用");
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "conversational");
+  assert.ok(result.text.includes("src/utils/legacy.js"), "兜底稿保全锚定词");
+  assert.equal(llm.seen.length, 2);
 });
 
 test("自适应·缺失 MODE 声明：回落 seed，行为与旧补全路径等价", async () => {
@@ -3573,4 +3574,67 @@ test("自适应·问句否决不误伤：无问号的任务种子仍走补全", 
   const result = await optimizePromptText({ llm, route: ROUTE, text: input });
   assert.equal(result.ok, true);
   assert.equal(result.mode, "seed", "无问号种子不受问句否决影响");
+});
+
+test("seed 收紧带：≥15 字输入超出 3.5× 触发收紧，取更短者（真实回归）", async () => {
+  // 真实数据：同一条 153 字输入两次运行 5.46×/2.27×，用户手动重跑纠正——
+  // 收紧带让这个纠正发生在管线内部。
+  const input = "帮我做一个支持断点续传的大文件上传功能"; // 20 字真种子（非检查型、非问句）
+  const fat = "MODE: seed\n帮我做一个大文件上传功能：支持断点续传，分片上传并在中断后从上次位置继续，上传中显示进度与已传大小，失败自动重试三次，全部完成后校验文件完整性，超时自动暂停并支持手动恢复，多文件并发上传时排队管理。";
+  const tight = "MODE: seed\n做大文件上传：分片断点续传，中断后从上次位置继续；显示进度；失败自动重试；完成后校验完整性。";
+  const llm = scriptedLlm([
+    textChunks(fat),
+    textChunks(tight),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "seed");
+  assert.ok(result.text.length <= input.length * 3.5, "收紧后必须落在带内");
+  assert.equal(llm.seen.length, 3, "改写 + 收紧 + 审判");
+  assert.ok(llm.seen[1].system.includes("compress an overlong prompt-unfold"), "收紧用专用压缩契约");
+  assert.ok(llm.seen[1].messages[0].content[0].text.includes("FAT UNFOLD TO COMPRESS"), "收紧压缩的是胖稿本身，不是重新展开原文");
+});
+
+test("seed 收紧带不误伤：微种子（<15 字）大幅展开是设计行为", async () => {
+  const input = "帮我做个导出功能"; // 9 字：真微种子
+  const fat = "MODE: seed\n帮我做一个导出功能：可选时间范围与统计维度，导出 CSV 与 Excel，数据量大时显示进度，空结果给提示，文件名带类型与时间。"; // ~5x
+  const llm = scriptedLlm([
+    textChunks(fat),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true);
+  assert.equal(llm.seen.length, 2, "微种子不触发收紧（展开正是产品价值）");
+  assert.ok(result.text.length > input.length * 3, "微种子的展开不被压制");
+});
+
+test("检查型请求划界：看看X能不能用 → 按 clarify 校验，拿到的永远是短稿（真实回归）", async () => {
+  // 真实数据：glm-5.2 对「帮我看看那个东西能不能用，就是昨天说的那个导出」连判
+  // seed（5.70×/5.26×），收紧后仍有 3.43×——语义上这是完整诉求，要的是澄清。
+  const input = "帮我看看那个东西能不能用，就是昨天说的那个导出";
+  const fat = "MODE: seed\n请检查昨天讨论的那个导出功能当前是否可用：先确认入口已上线，再分别用小数据量和大数据量各导出一次，核对内容与格式，检查响应时间，失败时记录报错并整理结论。";
+  const tight = "看看昨天说的那个导出功能现在能不能用，不能用的话说明原因。";
+  const llm = scriptedLlm([
+    textChunks(fat),        // 模型执意 seed + 超度
+    textChunks(tight),      // 澄清专用契约重试听劝
+    textChunks("OK"),       // 审判
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "clarify", "检查型请求强制按 clarify 校验");
+  assert.ok(result.text.length <= Math.ceil(input.length * 1.5), "必须落在澄清预算内");
+  assert.equal(llm.seen.length, 3);
+});
+
+test("检查型划界不误伤：短于 15 字的能不能疑问走原有路径", async () => {
+  // ≤14 字的能不能输入不该被硬掰成 clarify（例如口语种子）
+  const input = "这个能不能优化"; // 7 字
+  const llm = scriptedLlm([
+    textChunks("MODE: seed\n把这个功能优化一下：明确优化目标与衡量标准。"),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({ llm, route: ROUTE, text: input });
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, "seed", "短输入不触发检查型划界");
 });

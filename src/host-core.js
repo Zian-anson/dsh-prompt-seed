@@ -39,6 +39,7 @@ import {
   AUDIT_TEMPERATURE,
   CLARIFY_ONLY_SYSTEM,
   MAX_OUTPUT_TOKENS,
+  SEED_TIGHTEN_SYSTEM,
   TEMPERATURE,
   UNFOLD_RETRY_TEMPERATURE,
   buildAdaptiveSystemPrompt,
@@ -56,6 +57,7 @@ import {
   renderDeicticUserPrompt,
   renderElaborateUserPrompt,
   renderRepairUserPrompt,
+  renderSeedTightenUserPrompt,
   renderSignalUserPrompt,
   renderUserPrompt,
   validateInput,
@@ -824,7 +826,14 @@ export async function optimizePromptText(options) {
   if (!parsed.declared) {
     log?.("warn", "[prompt-seed] adaptive output missing the MODE line; defaulting to seed");
   }
-  const op = parsed.op;
+  // 检查型请求划界（真实回归）："看看X能不能用"类输入是完整诉求，模型却连判 seed
+  // （实测 5.70×/5.26×）。含「能不能/行不行/是不是/好不好」且 ≥15 字 → 一律按
+  // clarify 校验；胖稿自然落入收紧重试与会话兜底，用户拿到的永远是 ≤1.5× 或 1.0×。
+  const checkShaped = parsed.op === "seed" && /能不能|行不行|是不是|好不好/.test(trimmed) && trimmed.length >= 15;
+  const op = checkShaped ? "clarify" : parsed.op;
+  if (checkShaped) {
+    log?.("warn", "[prompt-seed] check-shaped input; enforcing clarify regardless of declaration");
+  }
   const precise = op === "precise";
   if (rewrite.text === "") {
     log?.("error", "[prompt-seed] model returned empty text after normalization");
@@ -853,28 +862,45 @@ export async function optimizePromptText(options) {
       rewrite = { ...retried, text: parseAdaptiveResult(retried.text).text };
     }
     if (rewrite.text.length > clarifyBudget) {
-      return {
-        ok: false,
-        code: ERROR_CODES.FIDELITY_REJECTED,
-        error: "澄清超出了长度预算，已保留原文",
-        violations: [
-          { kind: "padded", label: "澄清超度", text: "声明为澄清，输出 " + rewrite.text.length + " 字，输入 " + trimmed.length + " 字" },
-        ],
-        rejected: rewrite.text,
-      };
+      // 不再把用户晾在空手而归上：澄清两次都收不住 → 会话级轻润色兜底（1.0×，
+      // 必有产出）。真实数据里两条祈使消息撞进这条路，硬拒绝的体验是"点了没用"。
+      log?.("warn", "[prompt-seed] clarify still over budget; falling back to conversational touch-up");
+      return await runConversationalTouchup({ llm, route, text: trimmed, signal, log });
     }
   }
-  // 澄清不得丢失锚定词：指代理顺不能顺手改掉路径/标识符/数字。
+  // 澄清不得丢失锚定词：指代理顺不能顺手改掉路径/标识符/数字。同样走会话兜底
+  //（轻润色以原文为底，锚定词天然保全），不空手而归。
   if (op === "clarify" && !preservesAnchors(trimmed, rewrite.text)) {
-    return {
-      ok: false,
-      code: ERROR_CODES.FIDELITY_REJECTED,
-      error: "澄清丢失了输入中的关键锚定词，已保留原文",
-      violations: [{ kind: "distorted", label: "锚定词丢失", text: "路径 / 标识符 / 数字在澄清中被改写" }],
-      rejected: rewrite.text,
-    };
+    log?.("warn", "[prompt-seed] clarify lost anchors; falling back to conversational touch-up");
+    return await runConversationalTouchup({ llm, route, text: trimmed, signal, log });
   }
 
+
+  // ---- seed 收紧带（真实行为划界，纯代码触发）----
+  // samples.jsonl 实测：≥15 字的输入补到 2.0~2.6× 被采纳发送；5.4×/5.8× 两次被
+  // 撤销或手动重跑。真·微种子（登录、帮我做个X，<15 字）不受此带约束——它们
+  // 本来就该大幅展开。超带 → 一次收紧重试（不带深度后缀，避免催长），取更短者，
+  // 保证结果不会比第一稿更胖；不因仍超带而拒绝（种子宁可厚，不可空手）。
+  const SEED_TIGHTEN_RATIO = 3.5;
+  if (op === "seed" && trimmed.length >= 15 && rewrite.text.length > trimmed.length * SEED_TIGHTEN_RATIO) {
+    log?.("warn", "[prompt-seed] seed draft far exceeds the input's weight; tightening once", {
+      inputChars: trimmed.length, outputChars: rewrite.text.length,
+    });
+    const tightened = await callModel(llm, route, {
+      system: SEED_TIGHTEN_SYSTEM,
+      user: renderSeedTightenUserPrompt(trimmed, rewrite.text),
+      temperature: 0,
+      maxTokens: MAX_OUTPUT_TOKENS,
+      signal,
+      log,
+    });
+    if (tightened.ok) {
+      const tightenedText = parseAdaptiveResult(tightened.text).text;
+      if (tightenedText !== "" && tightenedText.length < rewrite.text.length) {
+        rewrite = { ...tightened, text: tightenedText };
+      }
+    }
+  }
   // ---- 补全闸（纯代码判定，不加 LLM 判断）----
   // 服务端在 temperature=0 下仍有方差：种子型输入的第一稿约半数只做标点级微调就
   // 返回。这里用确定性检查抓出"实质未变"，用强化指令最多重试两次（温度 0.4 → 0.7

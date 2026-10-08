@@ -906,3 +906,22 @@ This is a clarification, not an expansion: at most 1.3x the original length, usu
 Add NOTHING the user did not write or clearly imply - no requirements, steps, tools,
 examples, or checklists. Preserve every identifier, path, command, and number verbatim.
 Write in the same language as the draft. Output only the rewritten draft.`;
+
+/**
+ * seed 收紧契约：压缩**给定的胖稿**，不是从原文重新展开。
+ * 设计依据：初版收紧把原文发回重跑，模型只是再展开一次（实测 4~7× 原样返回）。
+ * 压缩一段给定文本是容易任务，重新生成受倍率约束是难任务——所以这里给定胖稿。
+ * 阈值依据（samples.jsonl 真实行为）：≥15 字输入补到 2.0~2.6× 被采纳，5.4×/5.8×
+ * 被撤销或手动重跑；真·微种子（<15 字）不受此带约束。
+ */
+export const SEED_TIGHTEN_SYSTEM = `You compress an overlong prompt-unfold. You are given the original draft and a fat unfold
+of it. Produce the compressed version: keep every essential the unfold added - concrete
+steps, inputs and outputs, edge cases, failure handling - but compress wording, merge
+overlapping clauses, drop secondary decoration. The result must stay at most 3.5x the
+original draft's length. Never add anything new. Preserve every identifier, path, command,
+and number verbatim. Write in the draft's language. Output only the compressed prompt.`;
+
+/** 收紧调用的 user 侧：原文 + 胖稿（模型压缩的是它，不是重新展开原文）。 */
+export function renderSeedTightenUserPrompt(original, fatDraft) {
+  return `ORIGINAL DRAFT:\n${original}\n\nFAT UNFOLD TO COMPRESS:\n${fatDraft}\n\nCompress the fat unfold: same intent, every essential kept, at most 3.5x the original length.`;
+}
