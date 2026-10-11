@@ -1,6 +1,6 @@
 {
   "name": "dsh-prompt-seed",
-  "version": "0.9.4",
+  "version": "0.9.5",
   "description": "DSH composer plugin: turn a one-line seed into a concrete, executable prompt — unfolding the detail the request entails while a semantic fidelity gate keeps the meaning intact. One click, one-click revert.",
   "type": "module",
   "license": "MIT",
@@ -35,8 +35,10 @@
   "scripts": {
     "build": "node tools/build.mjs",
     "check:docs": "node tools/check-doc-counts.mjs",
+    "check:install": "node tools/check-local-install.mjs",
+    "check:wire": "node tools/check-route-wire.mjs",
     "verify:release": "node tools/verify-release.mjs",
-    "test": "node tools/build.mjs && node tools/check-doc-counts.mjs && node --test test/*.test.mjs",
+    "test": "node tools/build.mjs && node tools/check-doc-counts.mjs && node tools/check-local-install.mjs && node tools/check-route-wire.mjs && node --test test/*.test.mjs",
     "prepack": "node tools/build.mjs"
   },
   "publishConfig": {

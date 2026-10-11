@@ -43,6 +43,18 @@ function writeStored(key, value) {
 }
 
 /**
+ * 生成一次运行的关联 id。
+ *
+ * 为什么需要它：隐式反馈（applied / reverted / retried / submitted）是调参唯一的
+ * 真实分布来源，但此前它与触发它的那次输入只能靠时间戳相邻去猜。带上同一个 runId
+ * 之后，日志里"这次输入 → 用户立刻撤销了"变成一行可 join 的记录。
+ * @returns {string} 关联 id。
+ */
+function newRunId() {
+  return 'r-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+}
+
+/**
  * 记一次隐式信号（D 项自适应深度的输入）。
  * @param {string} kind applied / reverted / retried / submitted。
  * @returns {object} 更新后的统计。
@@ -292,6 +304,8 @@ function OptimizeButton(props) {
             charsDelta: run.after.length - run.before.length,
             elapsedMs: Date.now() - run.at,
           },
+          // 回传发起那次优化时用的 runId：服务端的 feedback 记录据此与 optimize 记录配对。
+          runId: run.runId,
         }),
       }).catch(function () {});
     } catch (e) { /* 反馈绝不打断主流程 */ }
@@ -355,6 +369,8 @@ function OptimizeButton(props) {
     chipsAtRunRef.current = chips.slice();
     const seq = seqRef.current + 1;
     seqRef.current = seq;
+    // 同一次运行贯穿"请求 → 写回 → 隐式反馈"三处，日志里因此可精确 join。
+    const runId = newRunId();
     setBusy(true);
     setError('');
     setDeclined('');
@@ -366,6 +382,7 @@ function OptimizeButton(props) {
       body: JSON.stringify({
         text: text,
         sessionId: sessionIdRef.current,
+        runId: runId,
         // 深度档位随请求下发（D/E 项）：auto 时由本地反馈统计决定，零额外调用。
         depth: resolveDepth(depthModeRef.current, readStored(SIGNAL_KEY, {})),
       }),
@@ -442,7 +459,7 @@ function OptimizeButton(props) {
         return next.slice(-HISTORY_MAX);
       });
       inputActions.setDraft(res.text);
-      const run = { at: Date.now(), tier: res.tier || '', before: text, after: res.text };
+      const run = { at: Date.now(), tier: res.tier || '', before: text, after: res.text, runId: runId };
       lastRunRef.current = run;
       // applied = 改写确实被写回了输入框。它既是客户端存活的证据（样本里看得到就说明
       // 浏览器跑的是新版），也是"点了按钮但没写回"这类问题的分母。

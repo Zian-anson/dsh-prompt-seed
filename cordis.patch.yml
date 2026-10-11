@@ -9,6 +9,11 @@
 # The host half registers one loopback-only route, consumed by the browser half:
 #   POST /api/prompt-seed/optimize   { text } -> { ok, text } | { ok, code, error }
 #
+# "Loopback-only" means three checks, because each one alone is bypassable: the peer
+# socket address (a web page runs on this machine too), the Host header matched by full
+# shape (a domain resolving to 127.0.0.1 otherwise passes both), and Origin, which is the
+# only one that tells this app's page apart from any other page.
+#
 # To use a different path, uncomment the config below and keep
 # src/client-plugin.js's ROUTE in sync (both are compiled into the bundle).
 
@@ -17,3 +22,19 @@
       name: dsh-prompt-seed
       # config:
       #   route: /api/prompt-seed/optimize
+      #   # Pin the rewrite/audit model (both keys together; defaults to agentDefaultModel).
+      #   # provider: zai-coding-cn
+      #   # model: glm-5.2
+      #   # Route ONLY the two audit calls to another model - the worst-case path makes four
+      #   # calls and the audits are the lightest, so this is the most direct lever on how
+      #   # long a rejection takes. Leave unset to keep one model for everything.
+      #   # auditProvider: zai-coding-cn
+      #   # auditModel: glm-5.3-flash
+      #   # Wall-clock budget (ms) for the OPTIONAL calls (unfold retry, thin-elaboration,
+      #   # targeted repair). Past it the run skips the rest and returns the same honest
+      #   # result a failed repair would have produced. Default 20000, which is above every
+      #   # latency measured in real use - it bounds a hanging provider, not the normal path.
+      #   # deadlineMs: 20000
+      #   # context: false          # disable session-context injection (on by default)
+      #   # templates: false        # ignore $DSH_HOME/prompt-seed/prompts/*.md overrides
+      #   # samples: false          # disable the local event log

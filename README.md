@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/Zian-anson/dsh-prompt-seed)](https://github.com/Zian-anson/dsh-prompt-seed/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-2ea44f.svg)](https://github.com/topics/dsh-plugin)
-[![tests: 175 passing](https://img.shields.io/badge/tests-175%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 186 passing](https://img.shields.io/badge/tests-186%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin. Type a rough
 draft, click **✦**, and it is rewritten in place — **the plugin picks the operation**: a true
@@ -81,21 +81,21 @@ Install the released tarball (works today, pinned by version):
 
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.4/dsh-prompt-seed-0.9.4.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.5/dsh-prompt-seed-0.9.5.tgz
 ```
 
 > **If that fails with `ERR_PNPM_MISSING_TARBALL_INTEGRITY`**, download the asset and add the file
 > instead — the tarball is the same bytes, and a local path always resolves cleanly:
 >
 > ```sh
-> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.4/dsh-prompt-seed-0.9.4.tgz
+> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.5/dsh-prompt-seed-0.9.5.tgz
 > dsh plugin --profile <name> add ./dsh-prompt-seed-0.9.3.tgz
 > ```
 >
 > The cause is upstream, not in this package: pnpm writes a lockfile entry for an `https`
 > tarball without an `integrity` field and then rejects its own entry on the verification pass.
 > The release asset itself is verified byte-for-byte against the repository by
-> `node tools/verify-release.mjs v0.9.4`.
+> `node tools/verify-release.mjs v0.9.5`.
 
 The npm channel lights up once the package is published there:
 
@@ -164,7 +164,7 @@ Two halves, one package:
 ┌──────────────────────▼───────────────────────────────────┐
 │ lib/index.js    Cordis plugin (host)                     │
 │   ctx.webServer.register({ kind: 'exact', path, handler })│
-│   loopback-only (peer address AND Host header)           │
+│   loopback-only (peer addr + Host shape + Origin)        │
 │                                                          │
 │   CONTRACT: adaptive — one call, three operations         │
 │   ① rewrite call      ctx.get('llm').stream(...)         │
@@ -218,7 +218,10 @@ The row accepts a few optional keys; defaults are correct for almost everyone.
       config:
         route: /api/prompt-seed/optimize   # route path (this is the default)
         # provider: zai-coding-cn               # pin the model route (provider + model
-        # model: glm-5.3-flash                  #   work as a pair; defaults to agentDefaultModel)
+        # model: glm-5.2                        #   work as a pair; defaults to agentDefaultModel)
+        # auditProvider: zai-coding-cn          # route the two audit calls to a cheaper
+        # auditModel: glm-5.3-flash             #   model (provider + model, likewise a pair)
+        # deadlineMs: 20000                     # wall-clock budget for the optional calls
         # context: false                        # disable session-context injection (on by default)
 ```
 
@@ -229,6 +232,8 @@ half is a compiled bundle, so the two must be changed together. A test asserts t
 |---|---|---|
 | `route` | `/api/prompt-seed/optimize` | route path; changing it requires editing `ROUTE` in `src/client-plugin.js` and rebuilding |
 | `provider` + `model` | host default | pin the rewrite/audit model (both keys together) |
+| `auditProvider` + `auditModel` | same as above | route **the audit judge** to a different model (both keys together). The worst-case path makes four calls; the two audits are the lightest, so moving them to a faster/cheaper model is the most direct lever on how long a rejection takes. Leave unset to keep one model for everything. |
+| `deadlineMs` | `20000` | wall-clock budget for the **optional** calls (unfold retry, thin-elaboration, targeted repair). Past it the run skips what is left and returns the same honest result a failed repair would have produced. The default sits above every latency measured in real use, so it does not trade repair attempts for speed — it bounds a provider that hangs. Lower it to trade attempts for time. |
 | `context` | `true` | session-context injection; now read **on demand** (short draft or anaphora only) |
 | `samples` | `$DSH_HOME/prompt-seed/samples.jsonl` | event log path; `false` disables logging entirely |
 | `templates` | `true` | allow `$DSH_HOME/prompt-seed/prompts/*.md` to override the built-in prompts |
@@ -260,7 +265,9 @@ tested-good route is one config line:
 
 ## Error codes
 
-The route always answers `200` for business outcomes and puts the outcome in the body.
+The route answers `200` for **business** outcomes and puts the outcome in the body. Transport-level
+failures are the exception and carry their own status: `forbidden` is 403, `method_not_allowed` is
+405, an unparseable body is 400, and an oversized body is 413.
 
 | `code` | Cause | User-facing message (the UI ships Chinese strings today; English meaning below) |
 |---|---|---|
@@ -274,7 +281,8 @@ The route always answers `200` for business outcomes and puts the outcome in the
 | `nothing_to_optimize` | input is a bare greeting / punctuation only | Too short — nothing to optimize (a neutral hint, not a failure). |
 | `cannot_infer` | a bare signal with no anchor in the conversation | Cannot tell what this refers to — write out what you mean (zero model calls; a neutral refusal, never a guess). |
 | `fidelity_rejected` | rewrite and targeted repair both distort the request | The rewrite would change your meaning; your text was kept (the tooltip appends the `added` list: what the audit flagged). |
-| `forbidden` | non-loopback peer or Host | — (403) |
+| `payload_too_large` | request body over 64 KB | Too large — trim it and try again (HTTP 413). |
+| `forbidden` | non-loopback peer, `Host` or `Origin` | — (403) |
 
 ## Privacy and data flow
 
@@ -283,16 +291,22 @@ model access and credential handling stay exactly where they already are.
 
 - **The only outbound request is the model call the host would make anyway.** No telemetry, no
   update check, no third-party endpoint.
-- **One local HTTP route** (`POST /api/prompt-seed/optimize`), reachable only from loopback: the
-  handler verifies both the peer socket address and the `Host` header, so a DNS-rebinding page
-  cannot reach it from a browser.
+- **One local HTTP route** (`POST /api/prompt-seed/optimize`), reachable only from loopback. The
+  handler verifies three things, because each one alone is bypassable: the peer socket address
+  (an arbitrary web page runs on this machine too), the `Host` header matched by **full shape**
+  (a domain pointing at `127.0.0.1` otherwise passes both the peer check and any prefix test), and
+  the `Origin` header, which is the only one that separates *this app's page* from *some other
+  page*. A request with no `Origin` at all — a script, `curl` — is allowed, since the peer check
+  already covers it.
 - **Session context is read on demand**, not always: only when the draft is short (≤12 chars) or
   contains an anaphor, and never for a precise instruction that already names its files. It is used
   to resolve references, never as content to rewrite.
 - **The local event log** (`$DSH_HOME/prompt-seed/samples.jsonl`) records the outcome of each run —
-  code, tier, depth, gate verdict, violation classes, character counts, latency — plus the **first
-  400 characters** of the input, so that "is the depth right / is the gate misfiring" can be answered
-  with data instead of opinion. Set `samples: false` in the row config to disable it entirely.
+  code, tier, mode, depth, gate verdict, violation classes, character counts, latency, the
+  `codeVersion` that produced the row, and a per-run `runId` that pairs it with the implicit
+  feedback for the same run — plus the **first 400 characters** of the input, so that "is the depth
+  right / is the gate misfiring" can be answered with data instead of opinion. Set `samples: false`
+  in the row config to disable it entirely.
 - **Implicit feedback** is four local counters (`applied` / `reverted` / `retried` / `submitted`)
   kept in `localStorage`; they tune the depth setting on your machine and are never uploaded.
 
@@ -304,6 +318,7 @@ model access and credential handling stay exactly where they already are.
 | Click does nothing | the route is not registered | check the host log for the `[prompt-seed] loaded` banner; confirm `--dump-config` shows the row |
 | "Model service unavailable" / "No usable default model" | host `llm` or `agentDefaultModel` not mounted | configure a session model, or set `provider` + `model` in the row config |
 | Result is longer/shorter than you want | depth setting | **right-click the ✦ button** to cycle `auto / light / standard / deep`; the choice is remembered |
+| **Everything 403s after you moved to a tunnel / reverse proxy** | the route checks `Origin` as well as the peer address and `Host` (0.9.5). A proxy that rewrites `Host` — port forwarding, tunnels — while the browser keeps the original origin no longer looks same-machine. This is not DNS rebinding: that case is rejected for a different reason and always was | reach the app on its own loopback URL (the address `dsh web` prints). The 403 body names which check failed; the host log prints peer / `Host` / `Origin` verbatim |
 | The rewrite was not applied (shield 🛡) | the fidelity gate judged the rewrite would change your meaning — nothing is written back, your text is untouched | hover the shield — the tooltip names the violation class; the eye button lets you view the rejected draft anyway |
 | Output keeps getting rejected | the model is weak at instruction-following | point the row at a stronger model (`provider` + `model`) |
 | You edited the prompts but nothing changed | override files must be at `$DSH_HOME/prompt-seed/prompts/` — `system.md`, `user.md`, `audit.md` for the three main contracts, `signal.md`, `deictic.md`, `conversational.md` for the 0.9.x branches | files are re-read on every request, so a correct path takes effect on the next click |
@@ -327,7 +342,7 @@ just installed.
 ## Development
 
 ```sh
-npm test        # builds lib/ then runs 175 tests
+npm test        # builds lib/ then runs 186 tests
 npm run build   # tools/build.mjs → lib/
 ```
 
@@ -389,6 +404,7 @@ clean clone.
 | Template overrides: read per request, live edit, fallback, `templates: false` | route test with a temp `$DSH_HOME` | ✅ |
 | Self-disable: missing `webServer` / `effect` / `slots` never throws | unit tests | ✅ |
 | Host route: loopback guard, method/body rejection, optional services | real `req`/`res` stubs | ✅ |
+| Host route over a **real socket**: three-part loopback guard (peer address, `Host` shape, `Origin`), cross-site `Origin` refused, `127.0.0.1.evil.example` refused, oversized body answered with `413` instead of resetting the connection | `tools/check-route-wire.mjs` mounts the route on a real `http.createServer` and drives it with raw HTTP | ✅ 21 checks, run by `npm test` |
 | Browser bundle: `__ModuleLoader__` shape, slot registration, rendered button props | test materializes the real bundle and renders it | ✅ |
 | Cross-artifact route consistency | test compares `lib/client.js` against the host default | ✅ |
 | `codeVersion` truthfulness | test rewrites `package.json` after load and asserts the reported version is unchanged | ✅ |
@@ -411,11 +427,18 @@ clean clone.
    **1–2** for a short directive (one draft, plus one tightened retry);
    **2–3** for `clarify` (draft + audit, plus one clarify-only retry if over budget);
    **2–4** for `seed` (draft + audit, unfold retry, or a repair that is always re-audited).
-   Measured 0.9 s (near-verbatim pass-through) to ~20 s (worst case, slow provider).
+   Measured 0.9 s (near-verbatim pass-through) to ~20 s (worst case, slow provider). The worst case
+   is the **rejection** path — four calls that end with the draft unchanged — which is why
+   `auditProvider` / `auditModel` and `deadlineMs` exist. Neither is set by default, so out of the
+   box nothing here changes the numbers above.
 4. `TONE_SHIFTED` and `PADDED` are judgement calls by the audit model, not deterministic checks —
-   a misjudgement inside the tolerance band is the residual fidelity risk.
-5. The audit judge and the rewriter share the routed model by default; routing the audit to a
-   cheaper model would need another config knob.
+   a misjudgement inside the tolerance band is the residual fidelity risk. The converse is also
+   real and deliberate: a repair that returns the same text is **still re-audited**, because the
+   first verdict may simply have been wrong, and skipping the re-check to save a call would turn a
+   false alarm into a refusal.
+5. The audit judge and the rewriter share the routed model **by default**; `auditProvider` +
+   `auditModel` route the two audit calls elsewhere. What is still missing is a knob per *kind* of
+   call — the repair is a rewrite and stays on the main route on purpose.
 6. Depth adaptation needs a few runs before it moves (deliberately: two signals minimum, so two
    clicks cannot swing it).
 

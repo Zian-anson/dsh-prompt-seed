@@ -87,6 +87,10 @@ export const ERROR_CODES = Object.freeze({
   TRUNCATED: "truncated",
   FIDELITY_REJECTED: "fidelity_rejected",
   CANNOT_INFER: "cannot_infer",
+  // 传输层错误码：请求体超过路由缓冲上限。它不属于"业务结果"，所以走 HTTP 413
+  // 而不是 200+code；放进这张表是为了守住"每个码都有一句可展示文案"的不变量
+  // （此前这条路径只会在真实 socket 上表现为连接被重置，客户端连码都拿不到）。
+  PAYLOAD_TOO_LARGE: "payload_too_large",
 });
 
 /** 面向用户的中文错误文案（前端 tooltip 直接展示）。 */
@@ -101,6 +105,7 @@ export const ERROR_MESSAGES = Object.freeze({
   truncated: "结果被截断，请缩短输入后重试",
   fidelity_rejected: "优化会改变原意，已保留原文",
   cannot_infer: "上下文不足以推断这个输入的含义，请直接写出想说的内容",
+  payload_too_large: "请求体过大，请精简后再优化",
 });
 
 /**
@@ -116,6 +121,21 @@ const BLOAT_RATIO = 3.0;
  * 零温度重跑只会得到同样薄的稿子，必须引入受控扰动才有第二次机会。
  */
 const THIN_RETRY_TEMPERATURE = 0.5;
+
+/**
+ * 可选调用（补全重试 / 收紧重试 / 定向修复）的整体墙钟预算，毫秒。
+ *
+ * 为什么需要它：主路径最坏要花 4 次调用（改写→审判→修复→复审），provider 一慢就会
+ * 叠成十几秒甚至更久，而**第 3、4 次调用是可选的**——它们只在"第一稿越线"时才发生。
+ * 预算用尽即跳过剩余可选调用，直接给出与"修复后仍失真"完全相同的诚实结论。
+ *
+ * 默认值刻意保守（20s）：它**不是**给普通拒绝路径提速的旋钮——那件事的杠杆是
+ * `auditProvider`/`auditModel`（把两次审判挪到更便宜的模型上），见 README。
+ * 这条预算只负责兜住"provider 卡住 / 异常慢"这类失控情形，因此在实测过的所有
+ * 正常耗时（最慢 17.8s 的拒绝）之下都不会触发，不会牺牲任何一次可能成功的修复。
+ * 想更激进地压延迟，把它调小即可（代价是放弃更多修复机会）。
+ */
+export const DEFAULT_DEADLINE_MS = 20000;
 
 /** 审判判决的违规类型 → 归一化标识。ADDED 保留为历史别名，映射到 scope_added。 */
 const VIOLATION_KINDS = Object.freeze({
@@ -418,7 +438,7 @@ const ANCHOR_PATTERN = /[\\/:]|\d|[_@#`]|\b\w+\.(js|mjs|cjs|ts|tsx|jsx|py|go|rs|
 
 /** 明确的动作动词：出现即说明用户已经说清了"要做什么"。 */
 const ACTION_PATTERN =
-  /(删除|移除|去掉|改|修改|替换|重命名|添加|新增|实现|修复|更新|升级|迁移|重构|跑|运行|执行|测试|部署|回滚|delete|remove|rename|replace|add|implement|fix|update|upgrade|migrate|refactor|run|test|deploy|revert)/i;
+  /(删除|移除|去掉|改|修改|替换|换成|换|重命名|添加|新增|实现|修复|更新|升级|迁移|重构|跑|运行|执行|测试|部署|回滚|delete|remove|rename|replace|add|implement|fix|update|upgrade|migrate|refactor|run|test|deploy|revert)/i;
 
 /** 开放意图标记：出现即说明用户没打算要一个精确执行清单。 */
 const OPEN_INTENT_PATTERN = /(？|\?|吗[。.]?$|怎么|如何|有没有|看看|看一下|调研|了解|评估|梳理|探索)/;
@@ -492,13 +512,17 @@ export function preservesAnchors(input, rewrite) {
 /**
  * 执行一次保真审判。返回 null 表示审判本身不可用（调用失败），
  * 调用方应 fail-open 接受改写——闸门是纵深防御，不是唯一机制。
- * @param {object} params { llm, route, original, rewrite, context, signal, log }。
+ *
+ * `auditRoute` 允许把审判单独路由到另一个模型（README 的已知限制 5）：
+ * 审判是四次调用里最轻的两次，把它挪到更便宜/更快的模型上是压延迟最直接的杠杆。
+ * 缺省即沿用主路由，行为与从前完全一致。
+ * @param {object} params { llm, route, auditRoute, original, rewrite, context, signal, log }。
  * @returns {Promise<{status: string, violations: {kind: string, text: string}[], thin: boolean} | null>} 归一化判决，或 null。
  */
 async function runAudit(params) {
-  const { llm, route, original, rewrite, context, signal, log } = params;
+  const { llm, route, auditRoute, original, rewrite, context, signal, log } = params;
   // 审判是轻量判定任务：不透传 reasoningEffort，保持便宜与快速。
-  const call = await callModel(llm, route, {
+  const call = await callModel(llm, auditRoute ?? route, {
     system: buildAuditSystemPrompt(),
     user: renderAuditUserPrompt(original, rewrite, context),
     temperature: AUDIT_TEMPERATURE,
@@ -559,7 +583,7 @@ async function runSignalInference(args) {
       token: classified.token,
       reason: item.reason,
     });
-    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer };
+    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "signal" };
   }
 
   const draft = await callModel(llm, route, {
@@ -570,13 +594,13 @@ async function runSignalInference(args) {
     signal,
     log,
   });
-  if (!draft.ok) return draft;
+  if (!draft.ok) return { ...draft, mode: "signal" };
   if (draft.text === "") {
-    return { ok: false, code: ERROR_CODES.EMPTY_RESULT, error: ERROR_MESSAGES.empty_result };
+    return { ok: false, code: ERROR_CODES.EMPTY_RESULT, error: ERROR_MESSAGES.empty_result, mode: "signal" };
   }
   if (draft.text.includes(SIGNAL_FALLBACK_MARKER)) {
     log?.("warn", "[prompt-seed] model declined the signal expansion; refusing to guess");
-    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer };
+    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "signal" };
   }
 
   const check = checkSignalOutput(draft.text, classified.token, item.anchor, item.mode);
@@ -584,7 +608,7 @@ async function runSignalInference(args) {
     log?.("warn", "[prompt-seed] signal output failed the grounding check; refusing to guess", {
       reason: check.reason,
     });
-    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer };
+    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "signal" };
   }
 
   return {
@@ -606,7 +630,7 @@ async function runDeicticExpansion(args) {
   const { llm, route, text, context, signal, log } = args;
   if (!Array.isArray(context) || context.length === 0) {
     log?.("warn", "[prompt-seed] deictic directive without conversation context; refusing to guess");
-    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer };
+    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "deictic" };
   }
 
   let draft = await callModel(llm, route, {
@@ -617,13 +641,13 @@ async function runDeicticExpansion(args) {
     signal,
     log,
   });
-  if (!draft.ok) return draft;
+  if (!draft.ok) return { ...draft, mode: "deictic" };
   if (draft.text === "") {
-    return { ok: false, code: ERROR_CODES.EMPTY_RESULT, error: ERROR_MESSAGES.empty_result };
+    return { ok: false, code: ERROR_CODES.EMPTY_RESULT, error: ERROR_MESSAGES.empty_result, mode: "deictic" };
   }
   if (draft.text.includes(DEICTIC_FALLBACK_MARKER)) {
     log?.("warn", "[prompt-seed] model could not resolve the referent; refusing to guess");
-    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer };
+    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "deictic" };
   }
 
   let check = checkDeicticDegree(draft.text, text);
@@ -656,12 +680,13 @@ async function runDeicticExpansion(args) {
       ok: false,
       code: ERROR_CODES.FIDELITY_REJECTED,
       error: ERROR_MESSAGES.fidelity_rejected,
+      mode: "deictic",
       violations: [{ kind: "scope_added", text: "短指令发散越界（超出用户词语的自然子部件）" }],
     };
   }
   if (!check.ok) {
     log?.("warn", "[prompt-seed] deictic draft failed the degree check", { reason: check.reason });
-    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer };
+    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "deictic" };
   }
 
   return {
@@ -735,7 +760,27 @@ async function runConversationalTouchup(args) {
     detail: unchanged ? "会话消息→未改动" : "会话消息→轻润色" };
 }
 export async function optimizePromptText(options) {
-  const { llm, route, text, context, signal, log } = options ?? {};
+  const { llm, route, auditRoute, text, context, signal, log } = options ?? {};
+  // 可选调用（补全重试 / 收紧重试 / 定向修复）的墙钟预算起点。第 3、4 次调用只在
+  // 第一稿越线时才发生，是唯一可以"跳过而不改变诚实结论"的开销，见 DEFAULT_DEADLINE_MS。
+  const startedAt = Date.now();
+  const deadlineMs =
+    Number.isFinite(options?.deadlineMs) && options.deadlineMs > 0 ? options.deadlineMs : DEFAULT_DEADLINE_MS;
+  /**
+   * 现在还能不能再花一次可选调用。
+   * @param {string} step 步骤名（进日志，用于回答"这次为什么没修复"）。
+   * @returns {boolean} 是否仍可继续。
+   */
+  const maySpendMore = (step) => {
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs < deadlineMs) return true;
+    log?.("warn", "[prompt-seed] past the optional-call deadline; skipping the remaining retry/repair", {
+      step,
+      elapsedMs,
+      deadlineMs,
+    });
+    return false;
+  };
 
   const invalid = validateInput(text);
   if (invalid !== null) {
@@ -837,7 +882,7 @@ export async function optimizePromptText(options) {
   const precise = op === "precise";
   if (rewrite.text === "") {
     log?.("error", "[prompt-seed] model returned empty text after normalization");
-    return { ok: false, code: ERROR_CODES.EMPTY_RESULT, error: ERROR_MESSAGES.empty_result };
+    return { ok: false, code: ERROR_CODES.EMPTY_RESULT, error: ERROR_MESSAGES.empty_result, mode: op };
   }
 
   // ---- 澄清度约束（纯代码，不劳模型判断）----
@@ -908,6 +953,7 @@ export async function optimizePromptText(options) {
   // 它本来就该接近原样，再"补全"正好是上面要治的加戏。
   if (op === "seed" && isSubstantivelyUnchanged(trimmed, rewrite.text) && looksOpenEnded(trimmed)) {
     for (const temperature of [UNFOLD_RETRY_TEMPERATURE, UNFOLD_RETRY_TEMPERATURE + 0.3]) {
+      if (!maySpendMore("unfold-retry")) break;
       log?.("warn", "[prompt-seed] rewrite is substantively unchanged; retrying with elaboration", { temperature });
       const elaborated = await callModel(llm, route, {
         system: buildElaborateSystemPrompt(trimmed) + depthSuffix(depth),
@@ -938,7 +984,7 @@ export async function optimizePromptText(options) {
     return { ok: true, text: rewrite.text, tier: "full", mode: op, gate: unverifiedGate, detail: "" };
   }
 
-  const audit = await runAudit({ llm, route, original: trimmed, rewrite: rewrite.text, context, signal, log });
+  const audit = await runAudit({ llm, route, auditRoute, original: trimmed, rewrite: rewrite.text, context, signal, log });
   const auditDetail = typeof audit?.detail === "string" ? audit.detail : "";
 
   if (audit === null || audit.status === "unparsable" || audit.status === "ok") {
@@ -949,7 +995,8 @@ export async function optimizePromptText(options) {
     // 审判报"太薄"：只对种子输入再补一次。补全稿必须重新过审判——补全最容易
     // 越线成曲解，不能因为"只是加细节"就免检。补全后仍失真则回退第一稿：
     // 薄但忠实，比直接拒绝更有用（用户点这个按钮就是想要东西）。
-    if (audit?.thin === true && looksSeedish(trimmed)) {
+    // 预算用尽时不做这次补全，直接落到"薄但忠实"的结论——语义完全一致，只是少花一次。
+    if (audit?.thin === true && looksSeedish(trimmed) && maySpendMore("thin-elaboration")) {
       log?.("warn", "[prompt-seed] audit reports a thin rewrite; elaborating once more", {
         ratio: Number(metrics.ratio.toFixed(2)),
       });
@@ -962,7 +1009,7 @@ export async function optimizePromptText(options) {
         log,
       });
       if (elaborated.ok && elaborated.text !== "") {
-        const secondAudit = await runAudit({ llm, route, original: trimmed, rewrite: elaborated.text, context, signal, log });
+        const secondAudit = await runAudit({ llm, route, auditRoute, original: trimmed, rewrite: elaborated.text, context, signal, log });
         if (secondAudit === null || secondAudit.status === "ok") {
           return {
             ok: true,
@@ -1012,6 +1059,34 @@ export async function optimizePromptText(options) {
     rechecked: false,
     violations: audit.violations,
   };
+  /**
+   * 拒绝结果：与"修复后仍失真"完全同构，客户端不需要为任何一条新路径做区分。
+   * @param {string} rejectedDraft 随结果回传的被拒草稿（字段名 rejected，绝不占用 text）。
+   * @param {object} [extra] 附加字段（如 deadlineExceeded）。
+   * @returns {object} 结果对象。
+   */
+  const rejectForFidelity = (rejectedDraft, extra = {}) => ({
+    ok: false,
+    code: ERROR_CODES.FIDELITY_REJECTED,
+    error: ERROR_MESSAGES.fidelity_rejected,
+    mode: op,
+    added: violationTexts,
+    violations: audit.violations.map((item) => ({
+      kind: item.kind,
+      label: VIOLATION_LABELS[item.kind] ?? item.kind,
+      text: item.text,
+    })),
+    rejected: rejectedDraft,
+    ...extra,
+  });
+
+  // 预算用尽 → 跳过修复。修复之后还有一次**强制**复核（见下方二次审判），
+  // 所以这条可选路径的真实代价是两次调用；把它换成与"修复后仍失真"逐字相同的诚实
+  // 结论，用户不必为了同一句"已保留原文"再多等十几秒。
+  if (!maySpendMore("repair")) {
+    return rejectForFidelity(rewrite.text, { deadlineExceeded: true });
+  }
+
   const repaired = await callModel(llm, route, {
     system: buildRepairSystemPrompt(trimmed, { precise }),
     user: renderRepairUserPrompt(trimmed, violationTexts, context),
@@ -1020,20 +1095,10 @@ export async function optimizePromptText(options) {
     signal,
     log,
   });
-  if (!repaired.ok) return repaired;
+  if (!repaired.ok) return { ...repaired, mode: op };
   if (repaired.text === "") {
     log?.("error", "[prompt-seed] repair retry returned empty text");
-    return {
-      ok: false,
-      code: ERROR_CODES.FIDELITY_REJECTED,
-      error: ERROR_MESSAGES.fidelity_rejected,
-      added: violationTexts,
-      violations: audit.violations.map((item) => ({
-        kind: item.kind,
-        label: VIOLATION_LABELS[item.kind] ?? item.kind,
-        text: item.text,
-      })),
-    };
+    return rejectForFidelity(rewrite.text);
   }
 
   // ---- 二次审判：修复稿一律复核（回退 0.8.0 的"结构型免复核"捷径）----
@@ -1041,7 +1106,7 @@ export async function optimizePromptText(options) {
   // 实测代价：线上一次 `scope_added`（范围被扩宽，即"过度发散"）的修复稿未经复核就被交付，
   // 而旧版本在这里会复核、仍越线则**拒绝并保留原文**。省下的那一次调用，恰好省在了唯一
   // 拦住"越修越发散"的环节上——延迟优化不能吃掉发散控制。
-  const repairedAudit = await runAudit({ llm, route, original: trimmed, rewrite: repaired.text, context, signal, log });
+  const repairedAudit = await runAudit({ llm, route, auditRoute, original: trimmed, rewrite: repaired.text, context, signal, log });
   if (repairedAudit === null || repairedAudit.status === "ok") {
     return {
       ok: true,
@@ -1059,11 +1124,14 @@ export async function optimizePromptText(options) {
   });
   // 被拒版本随结果回传（字段名 rejected，绝不用 text）：客户端只在用户**显式点击**
   // "查看被拒版本"时才写回，闸门的不变量 I1（失败绝不自动改写输入框）保持不变。
+  // 违规清单以**复核稿**的判决为准（它反映的是最终要交付的那一稿）。
+  const repairedTexts = repairedAudit.violations.map((item) => item.text);
   return {
     ok: false,
     code: ERROR_CODES.FIDELITY_REJECTED,
     error: ERROR_MESSAGES.fidelity_rejected,
-    added: repairedAudit.violations.map((item) => item.text),
+    mode: op,
+    added: repairedTexts,
     // 结构化违规：客户端用 kind 渲染中文类别（"增加了原本没有的要求"），
     // 而不是把模型的原句直接糊到界面上——后者读起来像内部日志。
     violations: repairedAudit.violations.map((item) => ({

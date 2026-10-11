@@ -9,6 +9,68 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-10-11
+
+Three of these were found by pointing the plugin's own live route at itself from outside the
+browser — `Origin`, `Host`, request-body size and the sample log were all exercised over a real
+socket instead of through the unit-test doubles, which is how the two masking bugs below survived
+a green suite.
+
+### Fixed
+
+- **A web page you visit could drive this route.** The loopback guard checked the peer address and
+  the `Host` header, but never `Origin` — and `Origin` is the only one of the three that
+  distinguishes "this app's page" from "some other page". Because the route never looked at
+  `content-type` either, `content-type: text/plain` made the call a CORS *simple request*: no
+  preflight, so any page could blind-fire it. Measured before the fix:
+  `Origin: https://evil.example` + `text/plain` returned `200` and spent a real model call. An
+  `Origin`, when present, must now itself be loopback; requests with no `Origin` (scripts, curl)
+  are unaffected. The response still carries no CORS headers, so the exposure was never
+  disclosure — it was token spend and attacker-chosen rows in the local sample log.
+- **`Host: 127.0.0.1.evil.example` was accepted.** The check was `startsWith("127.")`, and a
+  domain whose A record points at `127.0.0.1` satisfies *both* the peer check (it really is
+  loopback) and that prefix test. Measured before the fix: `200`. Loopback hosts are now matched
+  by full shape (`127.a.b.c`), not by prefix.
+- **An oversized request body produced a connection reset, not an error.** `readJsonBody`
+  rejected and then called `req.destroy()` — tearing down the socket before the handler could
+  write its response. Measured before the fix: an 80 KB body returned `ECONNRESET` / "Empty reply
+  from server", with no status and no error code, contradicting the "every code has a
+  user-facing message" invariant. The body is now drained (bounded by a hard cap of 8x the limit,
+  past which the socket is still cut) and answered with `413 payload_too_large`. The test double
+  was `req.destroy = () => {}`, which is exactly why a green suite never noticed.
+- **The sample log recorded a mode that never ran.** When a result carried no `mode` — every
+  failure path, since none of them reach mode selection — the host half fell back to a heuristic
+  re-guess and wrote `elaborate` (or `precise`). Measured before the fix: `empty_input`, a bare
+  `hi`, an over-length draft and a rejected draft were all logged as `elaborate`, a mode this
+  pipeline has never had. The field that exists to attribute outcomes by mode was fabricating
+  them. Failures now log `mode: null`, and modes are attached where the pipeline really decides
+  them, so a rejection is attributed to the branch that actually ran.
+- **`ACTION_PATTERN` was missing `换` / `换成`.** The lexicon had `替换` but not the far more
+  common short form, so `把 X 换成 Y` was not recognised as an already-precise instruction while
+  `把 X 替换为 Y` was — a one-word gap that decides session-context reads and telemetry labels.
+
+### Added
+
+- **`codeVersion` and `runId` in the sample log.** The log spans releases and carried neither, so
+  attributing a row to the code that produced it meant comparing commit timestamps by hand.
+  `runId` is minted per run by the browser half and echoed on the implicit-feedback request,
+  which turns "this input was reverted immediately" into a record that can be joined instead of
+  inferred from adjacent timestamps.
+- **`auditProvider` / `auditModel`.** The audit judge and the rewriter shared one route
+  (documented as a known limitation). The two audit calls are the lightest of the four in the
+  worst path, so moving them to a cheaper model is the most direct lever on worst-case latency.
+  Unset, behaviour is unchanged.
+- **`deadlineMs`.** A wall-clock budget for the *optional* calls (unfold retry, thin-elaboration,
+  targeted repair). Past it, the remaining optional calls are skipped and the run returns the
+  same honest result it would have returned after a failed repair. The default (20 s) sits above
+  every latency measured in real use, so it does not trade repair attempts for speed — it bounds
+  runaway providers. Lower it to trade attempts for time.
+
+### Changed
+
+- `payload_too_large` is the first error code not answered with `200`: it is a transport fact,
+  not a business outcome, and the client needs to tell "fix your JSON" from "trim your draft".
+
 ## [0.9.4] - 2026-10-07
 
 ### Added

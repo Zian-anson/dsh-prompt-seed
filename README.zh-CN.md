@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/Zian-anson/dsh-prompt-seed)](https://github.com/Zian-anson/dsh-prompt-seed/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-2ea44f.svg)](https://github.com/topics/dsh-plugin)
-[![tests: 175 passing](https://img.shields.io/badge/tests-175%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 186 passing](https://img.shields.io/badge/tests-186%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
 一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件。输入一行种子草稿，
 点 **✦**，草稿原地改写成一个 agent 真正能执行的具体 prompt——**把你没写出来的中间细节展开**，
@@ -37,7 +37,7 @@
 - **深度档位**：自动/轻/标准/深度，右键 ✦ 切换；标准档与基线逐字节一致
 - **版本历史**：✦ 再来一版（保留最近 3 版）、‹ 回退一版、↺ 恢复原文
 - **模板可覆盖**：`$DSH_HOME/prompt-seed/prompts/` 下放同名文件即替换内置契约，改完下一次点击就生效
-- **隐私**：不持有任何 API key、无遥测、唯一出站请求就是宿主本来就会发的模型调用；本地回环路由双校验防 DNS rebinding
+- **隐私**：不持有任何 API key、无遥测、唯一出站请求就是宿主本来就会发的模型调用；本地回环路由三重校验（peer 地址、Host 完整形状、Origin）防 DNS rebinding 与跨站页面误打
 
 ## 兼容性
 
@@ -55,13 +55,13 @@
 
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.4/dsh-prompt-seed-0.9.4.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.5/dsh-prompt-seed-0.9.5.tgz
 ```
 
 > **如果报 `ERR_PNPM_MISSING_TARBALL_INTEGRITY`**：先下载资产，再按本地路径安装——字节完全相同，本地路径不受该问题影响：
 >
 > ```sh
-> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.4/dsh-prompt-seed-0.9.4.tgz
+> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.5/dsh-prompt-seed-0.9.5.tgz
 > dsh plugin --profile <name> add ./dsh-prompt-seed-0.9.3.tgz
 > ```
 >
@@ -113,7 +113,7 @@ dsh --profile <name>
 | `src/host-plugin.js` | Cordis 宿主插件 → `lib/index.js` |
 | `src/client-plugin.js` | 浏览器半区工厂 → 包成 `lib/client.js` |
 | `tools/build.mjs` | 构建脚本：复制宿主半区、包裹浏览器半区 |
-| `test/optimizer.test.mjs` | 175 项单元/契约/路由测试 |
+| `test/optimizer.test.mjs` | 186 项单元/契约/路由测试 |
 | `docs/FEATURES.md` | 逐项实测核对的功能清单 |
 
 `src/` 是经过测试的唯一事实源；`lib/` 是构建产物（**有意提交**，DSH 直接从 lib 加载，CI 有漂移守卫），不要手改。
@@ -121,7 +121,7 @@ dsh --profile <name>
 ## 开发
 
 ```sh
-npm test        # 先构建 lib/ 再跑 175 项测试
+npm test        # 先构建 lib/ 再跑 186 项测试
 npm run build   # tools/build.mjs → lib/
 ```
 
@@ -133,8 +133,8 @@ npm run build   # tools/build.mjs → lib/
 ## 已知限制
 
 1. 引用芯片（@文件 / 命令）会降级为纯文本——平台没有从文本重建芯片节点的 API；守恒校验会拒绝丢失芯片标签的写回。
-2. UI 文案仅中文（locale 服务未接）；非流式，最差路径约 20 秒。
-3. 闸门判定共享会话默认模型；`TONE_SHIFTED` / `PADDED` 是审判模型的判断而非确定性检查。
+2. UI 文案仅中文（locale 服务未接）；非流式。最差路径（被拒时走满四次调用）约 20 秒——`auditProvider` / `auditModel` 可把两次审判挪到更快的模型上，`deadlineMs` 可给可选调用设墙钟预算；两者缺省都不设，行为与从前一致。
+3. 闸门判定默认共享会话默认模型（可用 `auditProvider` / `auditModel` 单独路由）；`TONE_SHIFTED` / `PADDED` 是审判模型的判断而非确定性检查。反向的取舍同样是有意的：修复稿即使与上一稿逐字相同也**仍要复核**，因为首次判决本身就可能是一次误报。
 
 ## 协议
 

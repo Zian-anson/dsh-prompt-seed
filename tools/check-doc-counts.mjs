@@ -70,9 +70,42 @@ if (read("CHANGELOG.md").includes(`## [${pkgVersion}]`)) {
   problems.push(`CHANGELOG.md：没有 ## [${pkgVersion}] 段落（版本已升但没记变更）`);
 }
 
+// ---- 3) 真实 socket 检查数 ----
+// 这条数字最初是手写的，于是很快漂了：脚本跑 14 项、FEATURES 写 12 项，而 CI 全程是绿的
+// ——因为没有任何守卫在看这个数。未纳入守卫的数字就是会漂，这正是本脚本存在的理由。
+//
+// 数的是脚本里的 DECLARED_CHECKS 常数，而不是源码里的 `check("` 出现次数：循环里生成的
+// 检查在源码中只出现一次、运行时跑多次，源码计数永远对不上运行时计数。脚本结束前会拿
+// 实际执行条数与这个常数核对，于是"文档 = 常数 = 实际执行"三者被锁在一起。
+const wireDeclared = /const DECLARED_CHECKS = (\d+);/.exec(read("tools/check-route-wire.mjs"));
+if (wireDeclared === null) {
+  console.error("[docs] 读不到 tools/check-route-wire.mjs 的 DECLARED_CHECKS：守卫本身失效比数字漂移更危险");
+  process.exit(1);
+}
+const wireChecks = Number(wireDeclared[1]);
+if (wireChecks === 0) {
+  console.error("[docs] 没统计到任何真实 socket 检查：正则或写法变了，守卫本身失效比数字漂移更危险");
+  process.exit(1);
+}
+const wireClaims = [
+  ["README.md", /✅ (\d+) checks, run by `npm test`/, "英文 README 验证表"],
+  ["docs/FEATURES.md", /`npm run check:wire`，(\d+) 项/, "FEATURES 验证手段"],
+];
+for (const [file, pattern, where] of wireClaims) {
+  const found = read(file).match(pattern);
+  if (!found) {
+    problems.push(`${file}（${where}）：找不到声明，模式可能已失效`);
+    continue;
+  }
+  checked += 1;
+  if (Number(found[1]) !== wireChecks) problems.push(`${file}（${where}）：声明 ${found[1]}，实际 ${wireChecks}`);
+}
+
 if (problems.length > 0) {
-  console.error(`[docs] 实际测试数 ${actual}、版本 ${pkgVersion}，以下声明不一致：`);
+  console.error(`[docs] 实际测试数 ${actual}、版本 ${pkgVersion}、真实 socket 检查 ${wireChecks}，以下声明不一致：`);
   for (const line of problems) console.error("  - " + line);
   process.exit(1);
 }
-console.log(`[docs] ${checked} 处声明与仓库一致：${actual} 项测试、版本 ${pkgVersion}`);
+console.log(
+  `[docs] ${checked} 处声明与仓库一致：${actual} 项测试、${wireChecks} 项真实 socket 检查、版本 ${pkgVersion}`,
+);

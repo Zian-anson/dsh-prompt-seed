@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import {
+  DEFAULT_DEADLINE_MS,
   ERROR_CODES,
   assessInflation,
   collectStream,
@@ -1054,11 +1055,28 @@ function makeRequest(options = {}) {
   const host = options.host ?? "127.0.0.1:3080";
   const remoteAddress = options.remoteAddress ?? "127.0.0.1";
   const body = options.body ?? "";
-  const req = Readable.from(body === "" ? [] : [Buffer.from(body, "utf8")]);
+  // `chunks` 允许按分片投递：溢出路径要区分"单块就超限"与"持续推流超过硬上限"，
+  // 后者只有多分片才到得了。
+  const parts = Array.isArray(options.chunks)
+    ? options.chunks.map((chunk) => Buffer.from(chunk, "utf8"))
+    : body === ""
+      ? []
+      : [Buffer.from(body, "utf8")];
+  // `autoDestroy: false`：Readable 默认在 'end' 之后自己调一次 destroy()，
+  // 那会被下面的计数器算成"路由拆了 socket"。这里只统计**路由显式调用**的那一次。
+  const req = Readable.from(parts, { autoDestroy: false });
   req.method = method;
-  req.headers = { host };
+  // `headers` 可逐项覆盖：Host / Origin / content-type 都是这条路由的判定输入。
+  req.headers = { host, ...(options.headers ?? {}) };
   req.socket = { remoteAddress };
-  req.destroy = () => {};
+  // 忠实记录 destroy 调用，而不是让它变成空操作（旧实现是 `req.destroy = () => {}`）：
+  // 这条路径上真实发生过的故障正是"socket 先于响应被拆掉，客户端拿到 ECONNRESET"，
+  // 而空实现把这个现象抹平了——测试因此断言 400 通过，真实 socket 上却一个字节的
+  // 错误响应都送不到（实测复现并修掉之后才补上这条断言）。
+  req.destroyCalls = 0;
+  req.destroy = () => {
+    req.destroyCalls += 1;
+  };
   return req;
 }
 
@@ -1173,10 +1191,16 @@ test("Host 路由：回环放行、非法来源拒绝、方法与非 JSON 体各
   await route.handler(makeRequest({ body: "{not json" }), badJson);
   assert.equal(badJson.statusCode, 400);
 
-  // 超长请求体必须被拒绝，而不是无限缓冲
-  const tooLarge = makeResponse();
-  await route.handler(makeRequest({ body: JSON.stringify({ text: "x".repeat(70000) }) }), tooLarge);
-  assert.equal(tooLarge.statusCode, 400);
+  // 超长请求体必须被拒绝，而不是无限缓冲。413 而不是 400：这是传输层事实、
+  // 不是业务结果（"内容太大"该精简，"JSON 写坏了"该修语法，客户端要能区分）。
+  const tooLarge = makeRequest({ body: JSON.stringify({ text: "x".repeat(70000) }) });
+  const tooLargeRes = makeResponse();
+  await route.handler(tooLarge, tooLargeRes);
+  assert.equal(tooLargeRes.statusCode, 413);
+  assert.equal(JSON.parse(tooLargeRes.body).code, "payload_too_large");
+  // 关键回归：溢出本身不得拆掉 socket。拆了就写不回上面这个响应——真实 socket 上
+  // 客户端拿到的是 ECONNRESET / "Empty reply from server"，连错误码都看不到。
+  assert.equal(tooLarge.destroyCalls, 0, "溢出但未失控时不得 destroy socket");
 });
 
 test("回环防护同时校验 peer 地址与 Host 头", async () => {
@@ -1205,6 +1229,298 @@ test("回环防护同时校验 peer 地址与 Host 头", async () => {
     const res = makeResponse();
     await route.handler(makeRequest({ ...options, body: payload }), res);
     assert.equal(res.statusCode, 200, JSON.stringify(options));
+  }
+});
+
+test("Origin 必须是回环来源：跨站页面（含免预检的简单请求）一律 403", async () => {
+  const host = await import("../lib/index.js");
+  const webServer = makeWebServer();
+  host.apply(makeHostContext(webServer), { samples: false });
+  const route = webServer.routes[0];
+  const payload = JSON.stringify({ text: "帮我看看这段代码" });
+
+  // 回环校验只能证明"请求来自这台机器"，而浏览器就在这台机器上。text/plain 属于
+  // CORS 简单请求、不触发预检，本路由又从不校验 content-type —— 没有这道检查时，
+  // 任意网页都能这样盲打它（实测：200 且真的花掉一次模型调用）。
+  const crossSite = makeResponse();
+  await route.handler(
+    makeRequest({
+      body: payload,
+      headers: { "content-type": "text/plain", origin: "https://evil.example", "sec-fetch-site": "cross-site" },
+    }),
+    crossSite,
+  );
+  assert.equal(crossSite.statusCode, 403);
+  assert.equal(JSON.parse(crossSite.body).code, "forbidden");
+
+  // 解析不出的来源（沙箱 iframe / file:// 的 "null"）无法确认，同样不放行
+  const opaque = makeResponse();
+  await route.handler(makeRequest({ body: payload, headers: { origin: "null" } }), opaque);
+  assert.equal(opaque.statusCode, 403);
+
+  // 但本机页面与不带 Origin 的脚本调用必须继续放行——修一处绕过不能顺手把正常路径关掉
+  for (const headers of [{ origin: "http://127.0.0.1:3080" }, { origin: "http://localhost:3080" }, {}]) {
+    const res = makeResponse();
+    await route.handler(makeRequest({ body: payload, headers }), res);
+    assert.equal(res.statusCode, 200, JSON.stringify(headers));
+  }
+});
+
+test("回环 Host 按完整形状判定：127.0.0.1.evil.example 不得放行", async () => {
+  const host = await import("../lib/index.js");
+  const webServer = makeWebServer();
+  host.apply(makeHostContext(webServer), { samples: false });
+  const route = webServer.routes[0];
+  const payload = JSON.stringify({ text: "帮我看看这段代码" });
+
+  // 前缀判据 `startsWith("127.")` 会放行它：一个 A 记录指向 127.0.0.1 的域名
+  // 同时骗过 peer 校验（确实连到了本机）与前缀匹配（Host 是可控文本）。实测确认过。
+  const rebound = makeResponse();
+  await route.handler(makeRequest({ body: payload, headers: { host: "127.0.0.1.evil.example" } }), rebound);
+  assert.equal(rebound.statusCode, 403);
+
+  // 127.0.0.0/8 之内的真实回环地址仍然放行
+  const loopbackRange = makeResponse();
+  await route.handler(makeRequest({ body: payload, headers: { host: "127.0.0.53:3080" } }), loopbackRange);
+  assert.equal(loopbackRange.statusCode, 200);
+});
+
+test("请求体溢出：未失控时回 413 且不拆 socket；持续推流越过硬上限才切断", async () => {
+  const host = await import("../lib/index.js");
+  const webServer = makeWebServer();
+  host.apply(makeHostContext(webServer), { samples: false });
+  const route = webServer.routes[0];
+  const limit = 64 * 1024;
+
+  // 单块超限、总量仍在硬上限（8×）内：必须给出完整错误响应，socket 保留。
+  // 早先的实现先 reject 再 req.destroy()，真实 socket 上响应根本没机会写出去。
+  const once = makeRequest({ chunks: ["x".repeat(limit + 1024)] });
+  const onceRes = makeResponse();
+  await route.handler(once, onceRes);
+  assert.equal(onceRes.statusCode, 413);
+  assert.equal(JSON.parse(onceRes.body).code, "payload_too_large");
+  assert.equal(once.destroyCalls, 0, "溢出但未失控时不得 destroy socket");
+
+  // 持续推流越过硬上限：这时响应已无意义，切断才是对的
+  const flood = makeRequest({ chunks: Array.from({ length: 12 }, () => "x".repeat(limit)) });
+  const floodRes = makeResponse();
+  await route.handler(flood, floodRes);
+  assert.ok(flood.destroyCalls > 0, "远超上限的推流必须被切断");
+});
+
+test("事件日志的 mode 只登记真实档位：没走到选档的失败路径写 null，绝不编造", async () => {
+  const host = await import("../lib/index.js");
+  const dir = await mkdtemp(join(tmpdir(), "po-mode-"));
+  const file = join(dir, "samples.jsonl");
+  try {
+    const webServer = makeWebServer();
+    host.apply(makeHostContext(webServer), { samples: file });
+    const route = webServer.routes[0];
+    // 三条都在"选档"之前就结束的失败路径：空输入 / 纯招呼 / 超长
+    for (const text of ["", "hi", "x".repeat(MAX_TEXT_LENGTH + 1)]) {
+      await route.handler(makeRequest({ body: JSON.stringify({ text }) }), makeResponse());
+    }
+    const records = (await readFile(file, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(records.length, 3);
+    for (const record of records) {
+      assert.notEqual(record.code, "ok");
+      assert.equal(record.mode, null, `${record.code} 没有走到选档，mode 必须是 null 而不是猜出来的档位`);
+    }
+    // 早先的实现会把这三条全部记成 "elaborate"——一个本管线从未运行过的档位，
+    // 而这份日志的全部用途正是按档位归因。
+    assert.ok(!records.some((record) => record.mode === "elaborate"), "elaborate 不是本管线的档位");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("事件日志带 codeVersion 与 runId：跨版本样本可归因，反馈与优化可精确配对", async () => {
+  const host = await import("../lib/index.js");
+  const dir = await mkdtemp(join(tmpdir(), "po-runid-"));
+  const file = join(dir, "samples.jsonl");
+  try {
+    const webServer = makeWebServer();
+    host.apply(makeHostContext(webServer), { samples: file });
+    const route = webServer.routes[0];
+    await route.handler(
+      makeRequest({ body: JSON.stringify({ text: "解释代码", runId: "run-42", sessionId: "s-1" }) }),
+      makeResponse(),
+    );
+    await route.handler(
+      makeRequest({ body: JSON.stringify({ feedback: { kind: "applied", tier: "full" }, runId: "run-42" }) }),
+      makeResponse(),
+    );
+    const records = (await readFile(file, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    const optimize = records.find((record) => record.event === "optimize");
+    const feedback = records.find((record) => record.event === "feedback");
+    for (const record of [optimize, feedback]) {
+      // 没有 codeVersion 时，"这条样本是哪版代码产生的"只能靠时间戳考古——
+      // 实测为了判断一次拒绝是否已被新版本修掉，正是这么绕的。
+      assert.equal(record.codeVersion, host.codeVersion());
+      assert.equal(record.runId, "run-42");
+    }
+    // 关联 id 让"哪次输入被立刻撤销"成为可 join 的记录，而不是靠时间戳相邻去猜
+    assert.equal(optimize.runId, feedback.runId);
+
+    // 外部可控字符串进本地日志，必须截断
+    const longBody = JSON.stringify({ text: "解释代码", runId: "r".repeat(200) });
+    await route.handler(makeRequest({ body: longBody }), makeResponse());
+    const last = (await readFile(file, "utf8")).trim().split("\n").map((line) => JSON.parse(line)).pop();
+    assert.equal(last.runId.length, 64);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("动作词表覆盖『换/换成』：与『替换』等价，不再漏判精确指令", () => {
+  // 线上实测：同一句指令写成"换成"就判不出精确，写成"替换为"才判得出——
+  // 这个差别决定是否预读会话、以及遥测怎么标注。
+  assert.equal(
+    isPreciseInstruction("把 src/host-core.js 第 934 行的 precise 短路判据换成 preservesAnchors 版本"),
+    true,
+  );
+  assert.equal(
+    isPreciseInstruction("把 src/host-core.js 第 934 行的 precise 短路判据替换为 preservesAnchors 版本"),
+    true,
+  );
+  // 放宽一个词不得误伤：无事实锚定的同形表达仍按种子处理
+  assert.equal(isPreciseInstruction("把这个模块里的那段逻辑换个更容易懂的说法吧"), false);
+});
+
+test("审判可单独路由：auditProvider/auditModel 只改审判调用，改写仍走主路由", async () => {
+  const llm = scriptedLlm([
+    textChunks("MODE: seed\n先读一遍这个模块的导出结构，看看有没有循环依赖，再给出整理方案。"),
+    textChunks("OK"),
+  ]);
+  const result = await optimizePromptText({
+    llm,
+    route: ROUTE,
+    auditRoute: { provider: "cheap", model: "cheap-model" },
+    text: "看看代码",
+  });
+  assert.equal(result.ok, true);
+  assert.equal(llm.seen.length, 2);
+  assert.equal(llm.seen[0].provider, ROUTE.provider, "改写仍走主路由");
+  assert.equal(llm.seen[1].provider, "cheap", "审判走审判路由");
+  assert.equal(llm.seen[1].model, "cheap-model");
+});
+
+test("行 config 把审判路由接到路由处理器上", async () => {
+  const host = await import("../lib/index.js");
+  const webServer = makeWebServer();
+  const ctx = makeHostContext(webServer);
+  host.apply(ctx, { samples: false, auditProvider: "audit-p", auditModel: "audit-m" });
+  await webServer.routes[0].handler(makeRequest({ body: JSON.stringify({ text: "解释代码" }) }), makeResponse());
+  const seen = ctx.get("llm").seen;
+  assert.equal(seen.length, 2);
+  assert.equal(seen[0].model, "m", "改写用 agentDefaultModel");
+  assert.equal(seen[1].provider, "audit-p");
+  assert.equal(seen[1].model, "audit-m");
+});
+
+test("可选调用预算：超时后跳过修复，结论与『修复后仍失真』完全同构", async () => {
+  const input = "把 src/app.js 里的 login 换成 session 版本";
+  /**
+   * 每次调用都先等一会儿的假 llm：让"预算用尽"成为确定性事件，而不是碰运气。
+   * @param {Array} responses 各次调用的 chunk 序列。
+   * @param {number} delayMs 每次调用的耗时。
+   * @returns {object} 假 llm。
+   */
+  const slowLlm = (responses, delayMs) => {
+    const seen = [];
+    return {
+      seen,
+      stream(options) {
+        seen.push(options);
+        const chunks = responses[Math.min(seen.length - 1, responses.length - 1)];
+        return (async function* generate() {
+          await new Promise((done) => setTimeout(done, delayMs));
+          for (const chunk of chunks) yield chunk;
+        })();
+      },
+    };
+  };
+  const script = [
+    textChunks("MODE: precise\n把 src/app.js 里的 login 换成 session 版本，并保持行为等价、其余引用不动。"),
+    textChunks("PADDED: 给已明确的指令补了多余步骤"),
+    textChunks("把 src/app.js 里的 login 换成 session 版本。"),
+    textChunks("PADDED: 给已明确的指令补了多余步骤"),
+  ];
+
+  // 预算 30ms，两次调用各 20ms → 第三次（修复）之前必然已超时
+  const bounded = slowLlm(script, 20);
+  const fast = await optimizePromptText({ llm: bounded, route: ROUTE, text: input, deadlineMs: 30 });
+  assert.equal(fast.ok, false);
+  assert.equal(fast.code, ERROR_CODES.FIDELITY_REJECTED);
+  assert.equal(bounded.seen.length, 2, "超时后不得再发起修复与复审两次调用");
+  assert.equal(fast.deadlineExceeded, true);
+  assert.equal(fast.mode, "precise", "跳过修复不等于放弃档位归因");
+  assert.ok(typeof fast.rejected === "string" && fast.rejected !== "", "被拒草稿仍要回传给『查看被拒版本』");
+
+  // 同样的脚本、足够的预算 → 走满四次调用，结论在用户可见层面完全一致
+  const full = await optimizePromptText({ llm: slowLlm(script, 20), route: ROUTE, text: input, deadlineMs: 60000 });
+  assert.equal(full.ok, false);
+  assert.equal(full.code, ERROR_CODES.FIDELITY_REJECTED);
+  for (const key of ["code", "error", "mode"]) {
+    assert.deepEqual(fast[key], full[key], `超时路径与修复后仍失真路径的 ${key} 必须一致`);
+  }
+  assert.deepEqual(
+    fast.violations.map((item) => item.kind),
+    full.violations.map((item) => item.kind),
+  );
+  assert.ok(typeof full.rejected === "string" && full.rejected !== "");
+
+  // 默认值必须与 README / FEATURES 里写的一致：它同时是"不会误伤正常耗时"的承诺
+  assert.equal(DEFAULT_DEADLINE_MS, 20000, "改默认预算必须同改 README 与 docs/FEATURES.md");
+
+  // 非法预算一律回落默认值。0 / 负数绝不能被当成"立即超时"——
+  // 那等于把定向修复整体关掉，而用户以为自己只是设了个预算。
+  const bogus = slowLlm(script, 20);
+  const invalidBudget = await optimizePromptText({ llm: bogus, route: ROUTE, text: input, deadlineMs: 0 });
+  assert.equal(invalidBudget.ok, false);
+  assert.equal(bogus.seen.length, 4, "0/负数预算不得被当作立即超时");
+});
+
+test("回环判定三处共用同一套归一：IPv4-mapped IPv6 与尾点拼法不得一处放行一处拒绝", async () => {
+  const host = await import("../lib/index.js");
+  const webServer = makeWebServer();
+  host.apply(makeHostContext(webServer), { samples: false });
+  const route = webServer.routes[0];
+  const payload = JSON.stringify({ text: "帮我看看这段代码" });
+
+  // 对抗性复核实测的分歧：peer 一处解包了 ::ffff:，Host/Origin 两处没有，于是同一台
+  // 机器的两种写法一处放行、一处 403（旧代码放行、新代码拒绝，是本次引入的误拒）。
+  // 归一后三处必须给出同一个答案。
+  for (const headers of [
+    { host: "127.0.0.1:3080", origin: "http://[::ffff:127.0.0.1]:3080" },
+    { host: "127.0.0.1:3080", origin: "http://[::ffff:7f00:1]:3080" }, // URL 规范化后的写法
+    { host: "127.0.0.1:3080", origin: "http://localhost.:3080" },
+    { host: "[::ffff:127.0.0.1]:3080" },
+    { host: "localhost.:3080" },
+    { host: "127.0.0.1.:3080" },
+    { host: "LOCALHOST:3080" }, // Host 大小写不敏感（RFC），浏览器一律发小写
+  ]) {
+    const res = makeResponse();
+    await route.handler(makeRequest({ body: payload, headers }), res);
+    assert.equal(res.statusCode, 200, `${JSON.stringify(headers)} 是货真价实的本机拼法，不该被拒`);
+  }
+
+  // 越界段值不是地址：正则放它过去只是"看着像"
+  for (const bad of ["127.0.0.256:3080", "127.999.999.999:3080", "127.0.0.1.5:3080"]) {
+    const res = makeResponse();
+    await route.handler(makeRequest({ body: payload, headers: { host: bad } }), res);
+    assert.equal(res.statusCode, 403, `${bad} 不是合法回环地址`);
+  }
+
+  // peer 侧同样走归一：v4-mapped 的十六进制写法是 127.0.0.1，0a00:1 是 10.0.0.1
+  for (const [peer, expected] of [
+    ["::ffff:127.0.0.1", 200],
+    ["::ffff:7f00:1", 200],
+    ["::ffff:0a00:1", 403],
+  ]) {
+    const res = makeResponse();
+    await route.handler(makeRequest({ body: payload, remoteAddress: peer }), res);
+    assert.equal(res.statusCode, expected, `peer ${peer}`);
   }
 });
 
@@ -3339,6 +3655,7 @@ test("T034 事件日志字段与 FEATURES 声明一致（文档抽查转常驻�
     const documented = [
       "time", "event", "code", "tier", "mode", "depth", "gate", "repairs", "rechecked",
       "violations", "inputChars", "outputChars", "ms", "input", "added", "provider", "model", "from",
+      "codeVersion", "runId",
     ];
     for (const key of documented) {
       assert.ok(key in record, `FEATURES 声明的字段 ${key} 没有落盘（文档与实现已经不一致）`);
@@ -3637,4 +3954,50 @@ test("检查型划界不误伤：短于 15 字的能不能疑问走原有路径"
   const result = await optimizePromptText({ llm, route: ROUTE, text: input });
   assert.equal(result.ok, true);
   assert.equal(result.mode, "seed", "短输入不触发检查型划界");
+});
+
+test("客户端为每次运行生成 runId，并在隐式反馈里回传同一个 id", async () => {
+  // 宿主侧把 runId 写进两条记录只是一半；这条覆盖的是另一半——浏览器半区真的把它
+  // 发出来了。少了任何一半，日志里那 57 条隐式反馈仍然只能靠时间戳相邻去猜。
+  const bodies = [];
+  const h = await makeClientHarness({
+    draft: "帮我改一下这个模块",
+    fetchImpl: (url, init) => {
+      const body = JSON.parse(init.body);
+      bodies.push(body);
+      if (body.feedback) return Promise.resolve({ json: () => Promise.resolve({ ok: true }) });
+      return Promise.resolve({
+        json: () => Promise.resolve({ ok: true, text: "请检查该模块的导出结构，并给出整理方案。" }),
+      });
+    },
+  });
+  try {
+    h.primary().props.onClick();
+    await h.settle();
+
+    const runs = bodies.filter((body) => !body.feedback);
+    assert.equal(runs.length, 1);
+    assert.ok(typeof runs[0].runId === "string" && runs[0].runId !== "", "优化请求必须带 runId");
+
+    const applied = bodies.find((body) => body.feedback && body.feedback.kind === "applied");
+    assert.equal(applied.runId, runs[0].runId, "隐式反馈必须回传同一次运行的 runId");
+
+    // 换一段草稿再点一次 = 全新一次运行，必须是**新的** id：
+    // 两次运行共用一个 id 会把它们合并成一条记录，比没有 id 更糟。
+    h.editDraft("帮我改一下这个模块，再补充一点约束");
+    h.render();
+    await h.settle();
+    h.primary().props.onClick();
+    await h.settle();
+
+    const secondRuns = bodies.filter((body) => !body.feedback);
+    assert.equal(secondRuns.length, 2);
+    assert.notEqual(secondRuns[0].runId, secondRuns[1].runId, "每次运行必须是独立的 runId");
+
+    // 重试信号标的是**上一稿**，所以它带的必须是上一稿的 id，而不是新一稿的
+    const retried = bodies.find((body) => body.feedback && body.feedback.kind === "retried");
+    assert.equal(retried.runId, secondRuns[0].runId, "重试信号必须指向被重试的那一稿");
+  } finally {
+    h.restore();
+  }
 });
