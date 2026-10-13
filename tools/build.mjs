@@ -26,6 +26,7 @@ const HOST_COPIES = [
   ["src/session-context.js", "lib/session-context.js"],
   ["src/sample-log.js", "lib/sample-log.js"],
   ["src/signal-inference.js", "lib/signal-inference.js"],
+  ["src/prediction.js", "lib/prediction.js"],
   ["src/host-plugin.js", "lib/index.js"],
 ];
 

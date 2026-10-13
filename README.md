@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/Zian-anson/dsh-prompt-seed)](https://github.com/Zian-anson/dsh-prompt-seed/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-2ea44f.svg)](https://github.com/topics/dsh-plugin)
-[![tests: 186 passing](https://img.shields.io/badge/tests-186%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 200 passing](https://img.shields.io/badge/tests-238%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
 A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin. Type a rough
 draft, click **✦**, and it is rewritten in place — **the plugin picks the operation**: a true
@@ -44,7 +44,7 @@ did not write. This plugin does the opposite thing on purpose: a one-line seed i
 |---|---|---|
 | vague one-liner | returned nearly unchanged, or padded with `(TBD: …)` placeholders | **unfolded into a concrete, executable request** (measured 10–25×) |
 | already-precise instruction | reworded, sometimes with extra procedure appended | **left essentially as-is** (measured 1.0–1.1×), via a separate precise-input contract |
-| fidelity check | deterministic string check: did every path / identifier / number survive? | **semantic audit** by a second call, classifying the failure: `DISTORTED` / `SCOPE_ADDED` / `CONTRADICTED` / `TONE_SHIFTED` / `PADDED` |
+| fidelity check | deterministic string check: did every path / identifier / number survive? | **semantic audit with binding force**: a self-audit section in the same call (DRAFT committed first, FINAL must fix every self-reported violation, the deliverable still passes all deterministic checks; a sham fix is rejected) — plus an independent audit call for precise inputs that drifted |
 | on a violation | accept, or reject outright | **targeted repair by violation class**, re-audited; only reject if it still distorts |
 | what you see | a length ratio | **a gate credential**: fidelity ✓ · +150 chars · filled in: edge cases, failure handling |
 | not happy with the result | revert and click again | **✦ regenerate** (keeps up to 3 versions) and **‹ step back** |
@@ -81,14 +81,14 @@ Install the released tarball (works today, pinned by version):
 
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.5/dsh-prompt-seed-0.9.5.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.12.0/dsh-prompt-seed-0.12.0.tgz
 ```
 
 > **If that fails with `ERR_PNPM_MISSING_TARBALL_INTEGRITY`**, download the asset and add the file
 > instead — the tarball is the same bytes, and a local path always resolves cleanly:
 >
 > ```sh
-> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.5/dsh-prompt-seed-0.9.5.tgz
+> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.12.0/dsh-prompt-seed-0.12.0.tgz
 > dsh plugin --profile <name> add ./dsh-prompt-seed-0.9.3.tgz
 > ```
 >
@@ -148,6 +148,34 @@ invented (an unresolvable referent maps to cannot_infer).
 Measured against the live model: a short directive in a button-color context expands to a single
 sentence under 40 characters with the user's verb preserved and nothing invented, while a mismatched
 number refuses in 0 model calls.
+
+## Next-input prediction (0.9.6)
+
+When the draft is empty and the conversation has had at least one full exchange, the **✦** slot becomes
+a **crystal ball**: click it and the plugin reads the tail of the conversation, works out the message
+you are most likely to send next, and drops that sentence into the message box. Nothing else changes —
+type anything and the star comes back.
+
+The prediction is **shaped by what the context can support**, not by a fixed length. The anchor type is
+decided by deterministic rules (zero extra model calls) and each type carries its own character budget:
+
+| Anchor in the conversation tail | Type | Budget | What gets written |
+|---|---|---|---|
+| the assistant offered numbered options | choice | ≤ 20 chars | restates the option you are most likely to pick |
+| the assistant asked a question | answer | ≤ 40 chars | answers it |
+| the assistant asked whether to continue | continue | ≤ 20 chars | confirms it, with at most one short condition |
+| work was just delivered (tool activity, or delivery wording) | next-step | ≤ 40 chars | one concrete next action on that work |
+| something just failed | repair | ≤ 40 chars | one concrete fix or retry |
+| none of the above | **cannot_predict, zero model calls** | — | nothing is written; the icon goes neutral and says so |
+
+Rules enforced in code rather than trusted to the prompt: one message, never a list; over budget → one
+tightened retry → deterministic trim at the last sentence boundary; a genuine failure is reported next
+to the icon ("prediction failed, click to retry") instead of failing silently. Refusals stay neutral,
+not red — `cannot_predict` is the system declining to guess, exactly like `cannot_infer` for bare
+signals.
+
+An empty session shows nothing at all: no star, no crystal ball. The entry appears once there is a
+conversation to predict from.
 
 ## How it works
 
@@ -223,6 +251,10 @@ The row accepts a few optional keys; defaults are correct for almost everyone.
         # auditModel: glm-5.3-flash             #   model (provider + model, likewise a pair)
         # deadlineMs: 20000                     # wall-clock budget for the optional calls
         # context: false                        # disable session-context injection (on by default)
+        # predict: false                        # disable next-input prediction (on by default)
+        # requestTimeoutMs: 120000              # hard per-request wall-clock ceiling
+        # rewriteReasoningEffort: inherit       # forward the picker's reasoning effort to
+        #                                        #   generative rewrite calls (default: never)
 ```
 
 Changing `route` requires editing `src/client-plugin.js`'s `ROUTE` and rebuilding — the browser
@@ -231,10 +263,14 @@ half is a compiled bundle, so the two must be changed together. A test asserts t
 | Key | Default | Meaning |
 |---|---|---|
 | `route` | `/api/prompt-seed/optimize` | route path; changing it requires editing `ROUTE` in `src/client-plugin.js` and rebuilding |
-| `provider` + `model` | host default | pin the rewrite/audit model (both keys together) |
+| `provider` + `model` | host default | pin the rewrite/audit model (both keys together). Leave unset to **follow the host model picker**: the route re-reads `agentDefaultModel.currentSelection()` on every click, so switching models in the GUI switches this plugin on the next click. (A per-session `modelSelection` projection exists in the host but exposes no public read seam yet; when it does, following the conversation's own model is a drop-in change here.) |
+| `pipeline` | `unified` | `unified` rewrites, self-audits and corrects **in one model call** (DRAFT→AUDIT→FINAL protocol; malformed outputs degrade to the split path, so split is the quality floor). `split` restores the classic two-call rewrite + independent audit. Precise inputs that drifted are still sent to the independent audit even in unified mode. Measured (glm-5.2, 8-case corpus, two runs): −11~18% average latency, seed cases −35~79%, cross-audit clean rate 8/8 vs 7/8 in favor of unified. |
+| `rewriteReasoningEffort` | *(off)* | set to `inherit` to forward the current selection's `reasoningEffort` (e.g. `high`) to **generative** rewrite calls — first draft, clarify retry, unfold retry, thin elaboration, repair. Audits and seed-compression never inherit: their job is fast and stable, not deep. Default never forwards (measured: max-effort deep reasoning made rewrite outputs diverge and added seconds). |
 | `auditProvider` + `auditModel` | same as above | route **the audit judge** to a different model (both keys together). The worst-case path makes four calls; the two audits are the lightest, so moving them to a faster/cheaper model is the most direct lever on how long a rejection takes. Leave unset to keep one model for everything. |
 | `deadlineMs` | `20000` | wall-clock budget for the **optional** calls (unfold retry, thin-elaboration, targeted repair). Past it the run skips what is left and returns the same honest result a failed repair would have produced. The default sits above every latency measured in real use, so it does not trade repair attempts for speed — it bounds a provider that hangs. Lower it to trade attempts for time. |
-| `context` | `true` | session-context injection; now read **on demand** (short draft or anaphora only) |
+| `context` | `true` | session-context injection; now read **on demand** (short draft or anaphora only). Does **not** govern prediction — that is `predict`. |
+| `predict` | `true` | next-input prediction (the crystal ball). Its only input is the session tail, so it reads the session independently of `context`; set `predict: false` to turn the feature (and its session reads) off. |
+| `requestTimeoutMs` | `120000` | hard wall-clock ceiling for one route request (rewrite and predict alike). `deadlineMs` deliberately budgets only the optional calls; a provider that hangs on a mandatory call is cut off here with a structured `request_timeout` result, and an AbortSignal is forwarded into `llm.stream`. The default sits far above every legitimate latency — it converts "hangs forever" into "retryable error", nothing else. |
 | `samples` | `$DSH_HOME/prompt-seed/samples.jsonl` | event log path; `false` disables logging entirely |
 | `templates` | `true` | allow `$DSH_HOME/prompt-seed/prompts/*.md` to override the built-in prompts |
 
@@ -280,6 +316,7 @@ failures are the exception and carry their own status: `forbidden` is 403, `meth
 | `truncated` | `finish.kind === 'max-tokens'` | Result was truncated — shorten the input and retry. |
 | `nothing_to_optimize` | input is a bare greeting / punctuation only | Too short — nothing to optimize (a neutral hint, not a failure). |
 | `cannot_infer` | a bare signal with no anchor in the conversation | Cannot tell what this refers to — write out what you mean (zero model calls; a neutral refusal, never a guess). |
+| `cannot_predict` | the "predict next input" click, when the conversation tail holds no anchor (no options, no question, no offer, no failure, no delivered work) | There is no predictable next step in this context (zero model calls; a neutral refusal, never a guess). |
 | `fidelity_rejected` | rewrite and targeted repair both distort the request | The rewrite would change your meaning; your text was kept (the tooltip appends the `added` list: what the audit flagged). |
 | `payload_too_large` | request body over 64 KB | Too large — trim it and try again (HTTP 413). |
 | `forbidden` | non-loopback peer, `Host` or `Origin` | — (403) |
@@ -342,7 +379,7 @@ just installed.
 ## Development
 
 ```sh
-npm test        # builds lib/ then runs 186 tests
+npm test        # builds lib/ then runs 238 tests
 npm run build   # tools/build.mjs → lib/
 ```
 
@@ -404,7 +441,7 @@ clean clone.
 | Template overrides: read per request, live edit, fallback, `templates: false` | route test with a temp `$DSH_HOME` | ✅ |
 | Self-disable: missing `webServer` / `effect` / `slots` never throws | unit tests | ✅ |
 | Host route: loopback guard, method/body rejection, optional services | real `req`/`res` stubs | ✅ |
-| Host route over a **real socket**: three-part loopback guard (peer address, `Host` shape, `Origin`), cross-site `Origin` refused, `127.0.0.1.evil.example` refused, oversized body answered with `413` instead of resetting the connection | `tools/check-route-wire.mjs` mounts the route on a real `http.createServer` and drives it with raw HTTP | ✅ 21 checks, run by `npm test` |
+| Host route over a **real socket**: three-part loopback guard (peer address, `Host` shape, `Origin`), cross-site `Origin` refused, `127.0.0.1.evil.example` refused, oversized body answered with `413` instead of resetting the connection | `tools/check-route-wire.mjs` mounts the route on a real `http.createServer` and drives it with raw HTTP | ✅ 24 checks, run by `npm test` |
 | Browser bundle: `__ModuleLoader__` shape, slot registration, rendered button props | test materializes the real bundle and renders it | ✅ |
 | Cross-artifact route consistency | test compares `lib/client.js` against the host default | ✅ |
 | `codeVersion` truthfulness | test rewrites `package.json` after load and asserts the reported version is unchanged | ✅ |

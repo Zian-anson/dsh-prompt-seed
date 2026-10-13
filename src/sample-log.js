@@ -18,6 +18,8 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 
+import { safeSlice } from "./message-text.js";
+
 /** 单条样本里输入文本的最大长度。 */
 const INPUT_LIMIT = 4000;
 
@@ -55,7 +57,7 @@ export function resolveSamplePath(configured) {
 export async function appendSample(file, record) {
   if (typeof file !== "string" || file === "") return false;
   const dir = dirname(file);
-  const input = typeof record?.input === "string" ? record.input.slice(0, INPUT_LIMIT) : "";
+  const input = typeof record?.input === "string" ? safeSlice(record.input, 0, INPUT_LIMIT) : "";
   const line = `${JSON.stringify({ ...record, input })}\n`;
   const write = async () => {
     if (!readyDirs.has(dir)) {

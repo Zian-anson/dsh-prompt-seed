@@ -805,6 +805,83 @@ export function renderConversationalUserPrompt(input) {
   return `MESSAGE: ${input}\n\nTidy it up under the rules above, or return it unchanged.`;
 }
 
+// ---------------------------------------------------------------------------
+// 下一步输入预测契约（0.9.6）：输入框是空的，产出用户接下来最可能发的那一句话。
+//
+// 与信号分支的区别：信号分支的输入是用户**已经打下**的一个词（"继续"/"2"），本分支
+// 什么输入都没有，全部依据来自对话。因此判据必须更保守：支撑不了就回 [NO PREDICTION]
+// （host 转 cannot_predict），绝不用一句泛泛的"继续"充数——那句"继续"在语境里没有
+// 待续项时就是谎。
+// ---------------------------------------------------------------------------
+
+/** 预测调用的输出预算：一句话最多几十字，300 只给把推理算进 completion 的模型留余量。 */
+export const PREDICT_MAX_OUTPUT_TOKENS = 300;
+
+/** 预测的采样温度：要贴合语境而不是复读助手，但也不能发散。 */
+export const PREDICT_TEMPERATURE = 0.4;
+
+/** 预测收紧重试的温度：上一稿超长，随机性只会让它更长。 */
+export const PREDICT_RETRY_TEMPERATURE = 0;
+
+/** 预测 system 契约（分型预算见 PREDICT_KIND_SUFFIX）。 */
+const PREDICT_SYSTEM_TEMPLATE = `You predict the user's next message to a coding assistant. Nothing else. You never carry out the request itself.
+You are given the tail of a real conversation and the anchor this pipeline found in the assistant's last message. Write the ONE message the user is most likely to send next - in the user's own voice, in the conversation's language.
+RULES:
+1. One message, one sentence. No preamble, no quotes, no labels, no markdown, no numbered steps.
+2. Stay inside the BUDGET. Shorter is better than longer: the user must be able to send it as it stands.
+3. Ground every word in the conversation tail or the anchor. Never invent files, paths, numbers, options, requirements or goals that are not there.
+4. It is the USER's next message, not your advice to the assistant. Write what they would type.
+5. If the tail cannot support a prediction, output exactly [NO PREDICTION] and nothing else.
+EXAMPLES (assistant tail: 已改完登录流程，拆成了三个模块。要不要我继续把测试补上？):
+- 刚好: 继续，把测试补上。
+- 过头: 继续把测试补上，并把这次重构整理成文档发我。（新增交付物）
+- 不够: 好。（等于没说，用户不会这样发）`;
+
+/** 分型 → system 侧的类型说明与字数预算（预算同样由 checkPredictionOutput 强制）。 */
+const PREDICT_KIND_SUFFIX = Object.freeze({
+  choice: "\n\nANCHOR KIND: choice - the assistant offered numbered options.\nBUDGET: at most 20 characters. Restate the option the user is most likely to pick as ONE sendable sentence. Never reply with a bare number.",
+  answer: "\n\nANCHOR KIND: answer - the assistant asked the user a question.\nBUDGET: at most 40 characters. Answer that question as the user would.",
+  continue: "\n\nANCHOR KIND: continue - the assistant asked whether to go on.\nBUDGET: at most 20 characters. Confirm it, with at most one short condition.",
+  "next-step": "\n\nANCHOR KIND: next step - work was just delivered.\nBUDGET: at most 40 characters. Name ONE concrete next action on that work: verify it, run it, adjust one named part, or move to the next piece the conversation already implies. Never a list of steps.",
+  repair: "\n\nANCHOR KIND: repair - something just failed.\nBUDGET: at most 40 characters. Name ONE concrete fix or retry for that failure.",
+});
+
+/** 预测一次超预算后的收紧后缀。 */
+const PREDICT_RETRY_SUFFIX = "\n\nTIGHTENING (the previous draft broke the budget): write ONE shorter sentence. Cut qualifiers and connective padding first; never cut the action itself. Stay under the BUDGET above.";
+
+/**
+ * 预测的 system 提示词。
+ * @param {string} kind 分型（choice / answer / continue / next-step / repair）。
+ * @param {{tightened?: boolean}} [options] 是否追加收紧后缀。
+ * @returns {string} 契约文本。
+ */
+export function buildPredictSystemPrompt(kind, options = {}) {
+  const base = (getTemplateOverrides()?.predictSystem ?? PREDICT_SYSTEM_TEMPLATE).trim();
+  const suffix = PREDICT_KIND_SUFFIX[kind] ?? PREDICT_KIND_SUFFIX["next-step"];
+  return options.tightened === true ? base + suffix + PREDICT_RETRY_SUFFIX : base + suffix;
+}
+
+/**
+ * 预测的 user 提示词：对话尾部 + 锚点。
+ * @param {string} kind 分型。
+ * @param {string} anchor 锚点文本（助手尾部里被规则命中的那句/那段）。
+ * @param {{role: string, text: string}[] | undefined} turns 会话窗口（时间正序）。
+ * @returns {string} user 提示词。
+ */
+export function renderPredictUserPrompt(kind, anchor, turns) {
+  const lines = [];
+  if (Array.isArray(turns)) {
+    for (const item of turns) {
+      if (item === null || typeof item !== "object") continue;
+      const role = item.role === "assistant" ? "assistant" : "user";
+      const text = typeof item.text === "string" ? item.text.replace(/[ \t]+/g, " ").trim() : "";
+      if (text !== "") lines.push(`[${role}] ${text}`);
+    }
+  }
+  const anchorText = typeof anchor === "string" ? anchor.replace(/\s+/g, " ").trim() : "";
+  return `CONVERSATION TAIL (oldest first):\n${lines.length > 0 ? lines.join("\n") : "(empty)"}\n\nANCHOR (${kind}) - the part of the assistant's last message the pipeline keyed on:\n${anchorText === "" ? "(none)" : anchorText}\n\nWrite the user's likely next message now.`;
+}
+
 /**
  * 自适应契约（0.9.4 起，中间分支的唯一入口）：一次调用先判定输入缺什么，再做对应操作。
  *
@@ -848,6 +925,172 @@ Hard rules, all modes:
 - Output only the MODE line and the rewritten draft. No preamble, no commentary.`;
 
 
+/** 审判判决的违规类型 → 归一化标识。ADDED 保留为历史别名，映射到 scope_added。 */
+export const VIOLATION_KINDS = Object.freeze({
+  DISTORTED: "distorted",
+  SCOPE_ADDED: "scope_added",
+  CONTRADICTED: "contradicted",
+  TONE_SHIFTED: "tone_shifted",
+  PADDED: "padded",
+  ADDED: "scope_added",
+});
+
+/** 违规类型 → 面向用户的中文说明（拒绝时展示，也让日志可读）。 */
+export const VIOLATION_LABELS = Object.freeze({
+  distorted: "改变了原始目标",
+  scope_added: "增加了原本没有的要求",
+  contradicted: "覆盖了你已指定的选择",
+  tone_shifted: "改变了原有语气",
+  padded: "给已明确的指令补了多余步骤",
+});
+
+/**
+ * 归一化审判输出。协议极窄，每种问题一行：
+ *   "OK"                              → { status: 'ok', violations: [], thin: false }
+ *   "THIN: ..."                       → { status: 'ok', violations: [], thin: true }（失职，非失真）
+ *   "DISTORTED: a\nSCOPE_ADDED: b"    → { status: 'issues', violations: [{kind,text}...] }
+ *   其余（含空）                       → { status: 'unparsable' }（调用方 fail-open）
+ *
+ * 只有认得出协议行才算判决：夹杂的自然语言行被忽略，避免模型解释性输出被当成判决。
+ * @param {string} raw 审判调用的原始输出。
+ * @returns {{status: 'ok'|'issues'|'unparsable', violations: {kind: string, text: string}[], thin: boolean}} 归一化判决。
+ */
+export function parseAuditVerdict(raw) {
+  const empty = { status: "unparsable", violations: [], thin: false, detail: "" };
+  const cleaned = normalizeResult(raw ?? "").trim();
+  if (cleaned === "") return empty;
+
+  const violations = [];
+  let thin = false;
+  let matched = false;
+  let detail = "";
+  for (const line of cleaned.split(/\n+/)) {
+    const text = line.trim().replace(/^[-*•]\s*/, "");
+    if (text === "") continue;
+    // DETAIL 是"补了什么"的摘要，不是判决：单独取出，供客户端展示凭证（A 项）。
+    const summary = /^DETAIL\s*[:：]\s*(.*)$/i.exec(text);
+    if (summary !== null) {
+      matched = true;
+      const value = summary[1].trim();
+      if (value !== "" && !/^no\s*change/i.test(value) && value !== "无") detail = value;
+      continue;
+    }
+    // 裸 "OK" 行同样是判决（改写无越线）。它必须在这里被识别：早先的实现在函数开头
+    // 用正则短路 "OK"，改写成逐行解析后漏掉了这一步，"OK" 会掉进 unparsable，
+    // 连带把"补全后仍失真"的判定整条打歪（由测试捕获）。
+    if (/^ok\b/i.test(text)) {
+      matched = true;
+      continue;
+    }
+    const match = /^(DISTORTED|SCOPE_ADDED|CONTRADICTED|TONE_SHIFTED|PADDED|ADDED|THIN)\b\s*[:：]?\s*(.*)$/i.exec(text);
+    if (match === null) continue;
+    matched = true;
+    const key = match[1].toUpperCase();
+    if (key === "THIN") {
+      thin = true;
+      continue;
+    }
+    const kind = VIOLATION_KINDS[key];
+    const value = match[2].trim();
+    violations.push({ kind, text: value === "" ? VIOLATION_LABELS[kind] : value });
+  }
+
+  if (!matched) return empty;
+  return { status: violations.length === 0 ? "ok" : "issues", violations, thin, detail };
+}
+
+/**
+ * 统一管线的自审契约（0.12.0）：同一次调用内 先改写 → 再自审 → 再修正。
+ *
+ * 为什么此前拆成两次调用：同上下文自检倾向报喜（实测依据，见文件头）。
+ * 合并后约束力来自四层，缺一不可：
+ *   ① 承诺一致性——DRAFT 必须先写、写完不许回头改，自审面对的是既成事实；
+ *   ② FINAL 必须逐条修复 AUDIT 报出的违规，其余一字不动；
+ *   ③ 终稿仍要过宿主侧全部确定性校验（锚定词守恒 / 预算带 / 实质未变）；
+ *   ④ 报了违规而 FINAL 没真修（等于 DRAFT / 确定性检查不过）→ 按违规拒绝，
+ *      绝不接受假修——审判可以合并，约束力不合并。
+ * THIN 照旧触发补全链（复用既有 thin-elaboration 路径）。
+ */
+const UNIFIED_AUDIT_SUFFIX = `
+
+SELF-AUDIT CONTRACT (mandatory, in the same reply):
+After the rewrite you will audit your own DRAFT against the original draft on the
+distortion scale: DISTORTED (changed what was asked), SCOPE_ADDED (invented requirements),
+CONTRADICTED (overrode the user's choices), TONE_SHIFTED (different register), PADDED
+(added procedure to an already-complete request), THIN (seed mode only: rewrote without
+unfolding any implied detail).
+
+Reply in EXACTLY this four-section format:
+MODE: seed|clarify|precise
+DRAFT: <your rewrite, following the mode contract above>
+AUDIT: OK
+        — or one violation per line: KIND: what went wrong, in the user's language.
+          Report honestly: hiding a violation is a protocol failure.
+FINAL: <the deliverable. If AUDIT is OK, repeat DRAFT verbatim. Otherwise the corrected
+        version that fixes every listed violation and changes nothing else.>
+
+Never edit DRAFT after writing it. FINAL is the only section the user will receive.
+Length discipline applies to DRAFT and FINAL alike: clarify stays within 1.3x the
+original length; precise stays near-verbatim. Put each section marker (MODE / DRAFT /
+AUDIT / FINAL) at the start of its own line.`;
+
+/**
+ * 统一管线 system 提示词：自适应契约 + 自审段。
+ * @param {string} [input] 输入草稿（语言探测用，与自适应契约一致）。
+ * @returns {string} system 提示词。
+ */
+export function buildUnifiedSystemPrompt(input = "") {
+  return buildAdaptiveSystemPrompt(input) + UNIFIED_AUDIT_SUFFIX;
+}
+
+/**
+ * 解析统一管线的输出（0.12.0）。
+ *
+ * @param {string} raw 模型原始输出（已过 normalizeResult）。
+ * @returns {{
+ *   op: "seed"|"clarify"|"precise", declared: boolean,
+ *   draft: string, final: string,
+ *   audit: {status: "ok"|"issues", thin: boolean, violations: {kind:string,text:string}[], detail: string} | null,
+ *   malformed: boolean,
+ * }} 解析结果；协议段缺失时 malformed=true（调用方降级走双调用路径）。
+ */
+export function parseUnifiedResult(raw) {
+  const source = String(raw ?? "");
+  const lines = source.split("\n");
+  let index = 0;
+  while (index < lines.length && lines[index].trim() === "") index += 1;
+  const head = lines[index]?.trim() ?? "";
+  const modeMatch = head.match(/^MODE\s*[:：]\s*(seed|clarify|precise)\s*$/i);
+  const op = modeMatch !== null ? modeMatch[1].toLowerCase() : "seed";
+  const declared = modeMatch !== null;
+  const bodyStart = modeMatch !== null ? index + 1 : index;
+  const body = lines.slice(bodyStart).join("\n");
+
+  // 段标记优先按行首识别；模型偶发把四段挤在一行（实测：MODE: seed DRAFT: …
+  // AUDIT: …），行锚定全落空 → 回退到"空白分隔的行内标记"再试一次。
+  let draftAt = /^\s*DRAFT\s*[:：]\s*/m.exec(body);
+  let auditAt = /^\s*AUDIT\s*[:：]\s*/m.exec(body);
+  let finalAt = /^\s*FINAL\s*[:：]\s*/m.exec(body);
+  if (draftAt === null || auditAt === null || finalAt === null) {
+    draftAt = /(?:^|\s)DRAFT\s*[:：]\s*/.exec(body);
+    auditAt = /(?:^|\s)AUDIT\s*[:：]\s*/.exec(body);
+    finalAt = /(?:^|\s)FINAL\s*[:：]\s*/.exec(body);
+  }
+  // 三段齐全才算协议成立；缺任何一段都按 malformed 降级（不猜段义）。
+  if (draftAt === null || auditAt === null || finalAt === null || !(draftAt.index < auditAt.index && auditAt.index < finalAt.index)) {
+    return { op, declared, draft: "", final: "", audit: null, malformed: true };
+  }
+  const draft = body.slice(draftAt.index + draftAt[0].length, auditAt.index).trim();
+  const auditText = body.slice(auditAt.index + auditAt[0].length, finalAt.index).trim();
+  const finalText = body.slice(finalAt.index + finalAt[0].length).trim();
+  if (draft === "" || finalText === "") {
+    return { op, declared, draft, final: finalText, audit: null, malformed: true };
+  }
+  // AUDIT 段复用独立审判的归一化（违规类型映射 / THIN / DETAIL 全一致）。
+  const audit = parseAuditVerdict(auditText);
+  return { op, declared, draft, final: finalText, audit, malformed: false };
+}
+
 /**
  * 解析自适应契约的输出：首行 MODE 声明 + 正文。
  * 缺失或非法声明时回落 seed（旧行为等价：走补全闸与语义审判，审计仍兜底），并打标记
@@ -861,10 +1104,20 @@ export function parseAdaptiveResult(raw) {
   let index = 0;
   while (index < lines.length && lines[index].trim() === "") index += 1;
   if (index >= lines.length) return { op: "seed", text: source, declared: false };
-  const match = lines[index].trim().match(/^MODE\s*:\s*(seed|clarify|precise)\s*$/i);
-  if (!match) return { op: "seed", text: source, declared: false };
-  const rest = lines.slice(index + 1).join("\n").replace(/^\n+/, "");
-  return { op: match[1].toLowerCase(), text: rest, declared: true };
+  const header = lines[index].trim();
+  const match = header.match(/^MODE\s*:\s*(seed|clarify|precise)\s*$/i);
+  if (match) {
+    const rest = lines.slice(index + 1).join("\n").replace(/^\n+/, "");
+    return { op: match[1].toLowerCase(), text: rest, declared: true };
+  }
+  // 值无法识别的 MODE 头（"MODE: expand" / "MODE: Seed:" / 裸 "MODE:"）同样剥掉：
+  // 协议行不是用户内容，原样返回会让它整行漏进输入框（T-debug-M3 实测三种形态
+  // 全部 ok 透传）。declared 仍为 false——值不认识就不能按声明档位走。
+  if (/^MODE\s*[:：]/i.test(header)) {
+    const rest = lines.slice(index + 1).join("\n").replace(/^\n+/, "");
+    return { op: "seed", text: rest, declared: false };
+  }
+  return { op: "seed", text: source, declared: false };
 }
 
 /**

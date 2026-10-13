@@ -34,7 +34,7 @@ const results = [];
  * 改成运行时自证：结束前核对实际执行条数，数字没跟上就当场失败；文档守卫读这个常数，
  * 于是"文档 = 常数 = 实际执行"三者被锁在一起。
  */
-const DECLARED_CHECKS = 21;
+const DECLARED_CHECKS = 24;
 
 /** 记录一条检查结果，失败不抛（一次跑完，看全貌）。 */
 function check(name, fn) {
@@ -70,7 +70,7 @@ function scriptedLlm(responses) {
 }
 
 /** 起一个插件实例 + 真实 HTTP 服务。 */
-async function boot({ config = {}, responses }) {
+async function boot({ config = {}, responses, sessionQuery }) {
   const host = await import(pathToFileURL(join(root, "lib/index.js")).href);
   const work = mkdtempSync(join(tmpdir(), "po-wire-"));
   const samples = join(work, "samples.jsonl");
@@ -87,6 +87,9 @@ async function boot({ config = {}, responses }) {
     get(name) {
       if (name === "llm") return llm;
       if (name === "agentDefaultModel") return { currentSelection: () => ({ provider: "stub", model: "stub" }) };
+      // 预测通道的上下文来源：缺省 undefined（等价于旧宿主没有 sessionQuery，
+      // 那时预测应当走中性拒绝而不是抛）。
+      if (name === "sessionQuery") return sessionQuery;
       return undefined;
     },
   };
@@ -283,6 +286,60 @@ const OK_SCRIPT = [
   });
   check("超限请求体：不花任何模型调用", () => assert.equal(p.llm.seen.length, 0));
   await p.close();
+}
+
+// ---------------------------------------------------------------- 预测通道（0.9.6）
+{
+  const surface = {
+    events: [
+      { type: "user/message", data: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "重构登录流程" }] } },
+      { type: "tool/result", data: {} },
+      // 真实形状：助手消息嵌在 data.message 下（0.9.6 之前的提取按平铺读，永远读不到，
+      // 于是这条通道每次都以 cannot_predict 收场——正是本次线上排查的病灶）。
+      { type: "assistant/message", data: { turn: 1, step: 2, message: { role: "assistant", content: [{ type: "reasoning", text: "内部推理" }, { type: "text", text: "已改完。要不要我继续把测试补上？" }] } } },
+    ],
+  };
+  const p = await boot({ responses: [txt("继续，把测试补上。")], sessionQuery: { readSurface: async () => surface } });
+  const res = await rawRequest(p.port, {
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ mode: "predict", sessionId: "s-1", runId: "wire-predict" }),
+  });
+  const parsed = JSON.parse(res.body);
+  check("预测通道：200 + 一句话 + 只花一次调用", () => {
+    assert.equal(res.status, 200);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.kind, "continue");
+    assert.equal(parsed.text, "继续，把测试补上。");
+    assert.equal(p.llm.seen.length, 1, "预测只该花一次模型调用");
+  });
+  check("预测通道：predict 日志可归因（kind / runId / 工具活动）", () => {
+    const record = p.records().find((item) => item.event === "predict") ?? {};
+    assert.equal(record.code, "ok");
+    assert.equal(record.kind, "continue");
+    assert.equal(record.runId, "wire-predict");
+    assert.equal(record.sawToolActivity, true);
+    assert.equal(record.mode, "predict");
+  });
+
+  // 没有锚点的会话：一次调用都不该花（"拒绝硬猜"是这条通道的不变量）
+  const plain = {
+    events: [
+      { type: "user/message", data: { role: "user", source: { kind: "user" }, content: [{ type: "text", text: "你好" }] } },
+      { type: "assistant/message", data: { turn: 1, step: 1, message: { role: "assistant", content: [{ type: "text", text: "这个过程涉及三个步骤。" }] } } },
+    ],
+  };
+  const quiet = await boot({ responses: [txt("不该被调用")], sessionQuery: { readSurface: async () => plain } });
+  const refused = await rawRequest(quiet.port, {
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ mode: "predict", sessionId: "s-2" }),
+  });
+  check("预测通道：无锚点 → cannot_predict 且零模型调用", () => {
+    assert.equal(refused.status, 200);
+    assert.equal(JSON.parse(refused.body).code, "cannot_predict");
+    assert.equal(quiet.llm.seen.length, 0, "推不出来时不得花任何模型调用");
+  });
+  await p.close();
+  await quiet.close();
 }
 
 // ---------------------------------------------------------------- 汇总

@@ -9,6 +9,245 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-12
+
+Architecture change: **the rewrite and the audit are now one model call** (`pipeline: "unified"`,
+the new default). The audit keeps binding force — merging the calls did not merge the
+discipline.
+
+### Added
+
+- **Unified pipeline (DRAFT → AUDIT → FINAL).** One request produces the rewrite, a self-audit
+  on the distortion scale, and the corrected deliverable. Binding force comes from four layers:
+  ① the model must commit DRAFT before auditing it (and never edit it after); ② FINAL must fix
+  every self-reported violation, changing nothing else; ③ the deliverable still passes every
+  deterministic check (clarify budget, anchor preservation, seed band, unchanged detection);
+  ④ a reported violation with a verbatim-unchanged FINAL is rejected with those violations —
+  a sham fix never ships. Malformed protocol output degrades to the split path automatically,
+  so **split is the quality floor**. Precise inputs that drifted are exempt from self-audit
+  trust and still go to the independent audit call (measured self-flattery on that class).
+  A THIN self-report still enters the elaboration chain, whose output is re-audited
+  independently. `pipeline: "split"` restores the classic two-call path; `body.pipeline`
+  overrides per request (loopback A/B and debugging).
+- **A/B benchmark tooling** (`tools/eval-unified.mjs`): same corpus through both pipelines,
+  judged by the identical independent audit (the judge cannot tell which pipeline produced a
+  draft). Measured on glm-5.2, 8 real-use cases, two runs: average latency **−11~18%**
+  (seed class −35~79%), success 8/8 = 8/8, cross-audit clean **8/8 vs 7/8 in favor of
+  unified** in both runs.
+
+### Fixed
+
+- Post-hoc calls (seed tighten, unfold retry) now strip any drifted unified-protocol sections
+  from their outputs before use — no path can write `DRAFT:`/`AUDIT:`/`FINAL:` markers into
+  the composer.
+- A self-audit-repaired final no longer re-enters the unfold gate (a repair that lands near
+  the original is the correct outcome of fixing scope-added, not a "did nothing" draft), and
+  a THIN self-report no longer double-elaborates (one chain, one audit).
+- The unified parser accepts single-line protocol output (all four sections on one line — a
+  real drift shape observed on glm-5.2).
+
+### Changed
+
+- Violation normalization (`VIOLATION_KINDS` / `VIOLATION_LABELS` / `parseAuditVerdict`)
+  moved to `prompt-templates.js` so the unified parser shares the exact same normalization;
+  `host-core.js` re-exports them (import surface unchanged).
+- The audit-OK outcome handling was extracted into `resolveAuditedOutcome`, shared by both
+  pipelines.
+
+## [0.11.0] - 2026-10-12
+
+Iteration round from the roadmap (P0-2 / P0-3 / P1-4 / P1-6 / P1-7). Streaming feedback
+(P0-1) was skipped by decision.
+
+### Added
+
+- **`classificationSource` routing attribution in the sample log.** Every optimize row now
+  records which rule routed the input (`signal-number`, `conversational-go-ahead`,
+  `adaptive-clarify-forced`, `assistant-question`, `content-free`, …) — the denominator for
+  every future threshold tune and the English-rules hit-rate check. `npm run stats`
+  (`tools/sample-stats.mjs`) prints rule × outcome distribution, UI latency percentiles and
+  the runId-joined revert rate in one command.
+- **Bilingual classification rules.** The signal-word, deictic-verb, meta/opinion/question/
+  continuation/seed-verb and go-ahead tables now carry English alternatives (case-
+  insensitive), and the assistant-question boundary recognizes "what should I do next"-shaped
+  English. English inputs route to the same one-call conversational branch instead of
+  falling into the seed unfold. Seeds are still protected by the SEED_VERB guard.
+- **`rewriteReasoningEffort: "inherit"` config.** Forwards the model picker's
+  `reasoningEffort` to generative rewrite calls only; audits and seed compression never
+  inherit. Default stays off (measured divergence with deep reasoning).
+- **Localized client UI (zh/en).** All visible strings moved to a table resolved from the
+  host `locale` service (`ctx.get("locale").id`) with `navigator.language` and Chinese
+  fallbacks; known server error codes map to client-side localized text. The host-side
+  `ERROR_MESSAGES` remain Chinese — noted as a remaining limitation.
+
+### Changed
+
+- **The route handler is now a slim dispatcher** over three named channels
+  (`handleFeedback` / `handlePredict` / `handleOptimize`) — the structural prerequisite for
+  any per-channel extension (streaming included).
+- `isConversationalMessage` is now a boolean projection of `conversationalRuleOf`, so the
+  decision and its attribution share one source of truth.
+- The startup banner additionally reports `predict`, `requestTimeoutMs` and
+  `rewriteReasoningEffort`.
+
+## [0.10.0] - 2026-10-12
+
+Optimization round driven by the real usage distribution in `samples.jsonl` (170 rows,
+37 UI optimize clicks, 69 feedback signals). Every change below traces to a measured pain:
+the six reverted runs were all micro-inputs massively expanded; UI click latency p50 was
+7.6 s; and the duplicated helpers had already drifted once.
+
+### Fixed
+
+- **Multi-pick number signals (`1，2` / `1、2` / `1 2` / `1,2,3`) fell into the seed branch.**
+  In the real data `1，2` was unfolded twice (35× and 19×) and reverted both times. They are
+  now classified as number signals: every picked number must match an assistant option
+  (anchor joins all matched options) — a partial match refuses to guess, same invariant as
+  the single-number path.
+- **Go-ahead confirmations were unfolded as seeds.** 「好，按照这个路线继续。」(18×) and
+  「可以，你按这个去做吧。」(27×) were both reverted. A confirmation opener (好/可以/行/对…)
+  followed by a go-ahead/continuation phrase (≤40 chars, no task verb) now routes to the
+  conversational branch: 1.0× light touch-up, one model call, never rejected.
+
+### Changed
+
+- **Clarify drafts inside the deterministic band skip the audit call.** Past the 1.5×
+  budget, anchor preservation and a new 0.7× lower bound, the residual semantic risk equals
+  the `unverified` tier the conversational branch already ships (its 0.94–1.06× outputs were
+  all accepted in real use). A clarify click drops from ~8 s to ~4 s. Side benefit: an
+  in-band near-identical clarify draft no longer enters the THIN→elaborate chain — that
+  chain expanded complete check-shaped requests into checklists, the exact shape of the
+  real reverts. Out-of-band drafts (content lost) still go through the audit.
+- The gate credential for unaudited drafts now reads 「未审判（确定性校验通过）」 —
+  accurate for both sources (precise skip and the clarify short-circuit).
+
+### Refactored (no behavior change)
+
+- `lastSentence` / `lastMatchingSentence` / `cjkChars` / `latinWords` were duplicated
+  byte-for-byte across `signal-inference.js` and `prediction.js`; they now live in
+  `message-text.js` (`lastSentenceOf` / `lastMatchingSentenceOf` / `cjkCharSet` /
+  `latinWordSet`) with the sentence-boundary regex shared.
+- The seed tighten band and the unfold-retry gate moved out of `optimizePromptText` into
+  module-level `tightenSeedDraft` / `unfoldRetryIfNeeded` (semantics preserved verbatim,
+  including keeping the last elaboration attempt).
+- Client: gate-credential and delta formatting extracted into pure functions
+  (`formatGateCredential` / `formatDelta`); the duplicated `?debug=1` URL check in the host
+  route collapsed into `wantsDebugFlag`.
+
+## [0.9.7] - 2026-10-12
+
+Team debug round: one static pass and one runtime pass over the whole tree, every finding
+reproduced before fixing and covered by a regression test (202 → 216 tests).
+
+### Fixed
+
+- **Hollow rewrites could bypass the fidelity gate in precise mode.** `isSubstantivelyUnchanged`
+  only guarded the input side of the skeleton comparison, so a precise-declared rewrite that
+  deleted everything (`登录` → `。`) fell inside the edit-distance tolerance, tripped the
+  audit-skipping shortcut, and was written back as `ok` with an "unverified" credential. The
+  rewrite side is now guarded too — an emptied skeleton is never "unchanged", the audit always
+  runs.
+- **Deictic directives with a demonstrative were rejected for doing their job.** The degree
+  check demanded verbatim preservation of 这/那/它 while the contract *requires* resolving
+  them — the template's own sample output failed its own check. Demonstratives are now
+  stripped like softeners before the verbatim check; the verb itself must still survive.
+- **`"要不要继续？1. … 2. …"` anchors were missed** by both the prediction classifier and the
+  word-signal path: the offer sits in the second-to-last sentence, and both only looked at the
+  last one — the plugin's own template example was unrecognizable. Prediction now treats
+  offer+numbered-options as a `choice` anchor; the signal path scans for the offer sentence
+  when options are present.
+- **Unrecognized `MODE:` headers leaked into the composer.** Only `seed|clarify|precise` were
+  stripped; `MODE: expand`, `MODE: Seed:` and bare `MODE:` passed through verbatim. Any
+  `MODE:`-shaped leading line is now stripped (declared only when the value is recognized),
+  and the three bypass paths that never parsed (unfold retry, THIN elaboration, conversational
+  touch-up) now run the same parser.
+- **Surrogate pairs could be sliced in half** at every fixed-length truncation (context
+  windows, prediction budget, log previews), leaving lone surrogates in prompts and even in
+  the written-back draft. All truncation sites now use a surrogate-safe slice.
+- **Bracketed option lists without whitespace merged options** (`（1）方案A（2）方案B` gave
+  option 1 both texts); the option-boundary split now recognizes bracketed markers.
+- **Trailing-punctuation signals and 5-digit numbers fell into the adaptive pipeline**
+  (`继续。`, `ok!`, `10000`) — exactly the inputs the signal branch exists to catch. Trailing
+  punctuation is stripped before classification and the number width raised to 6.
+- **Deictic directives never saw the assistant tail**: the branch only accepted user turns,
+  so `改一下` after the assistant just delivered something was always `cannot_infer`. The
+  assistant tail is now wired through and rendered as the most recent context entry.
+
+### Changed
+
+- **`context: false` no longer disables next-input prediction.** The prediction channel has
+  its own `predict` switch (default on); `context` keeps governing rewrite/audit context
+  injection. Previously the crystal ball rendered but refused every click with
+  `cannot_predict`, silently.
+- **Every route request now has a hard wall-clock ceiling** (`requestTimeoutMs`, default
+  120 s). `deadlineMs` intentionally budgets only the optional calls; a hung provider on a
+  mandatory call used to hang the request (and the client fetch) forever. The route now races
+  the task against the ceiling, returns a structured `request_timeout` result, and forwards an
+  AbortSignal into `llm.stream` so well-behaved providers stop early; a client disconnect
+  aborts too.
+- **Model output has a hard size cap** (4× the input limit). A runaway provider that streams
+  1 MB with `finish=stop` is now rejected with `output_too_large` instead of being pasted
+  into the composer.
+
+## [0.9.6] - 2026-10-12
+
+The composer's empty state was carrying a dead control: a half-transparent star that did nothing until
+you typed, in sessions where there was nothing to optimize. That slot now has two identities, and the
+second one earns its place.
+
+### Added
+
+- **Next-input prediction.** When the draft is empty and the conversation has had at least one full
+  exchange (a user turn, an assistant turn, and no turn currently running), the **✦** slot becomes a
+  **crystal ball**. Clicking it reads the conversation tail and writes the message you are most likely
+  to send next straight into the message box — one model call, no dialog. Typing anything returns the
+  star immediately.
+- **Anchor-shaped predictions instead of a fixed length.** The anchor type is decided by deterministic
+  rules with zero extra model calls, and each type carries its own character budget: numbered options
+  → restate the likely pick (≤ 20); a pending question → answer it (≤ 40); "shall I continue?" →
+  confirm, at most one short condition (≤ 20); freshly delivered work (tool activity in this turn, or
+  delivery wording) → one concrete next action (≤ 40); a failure → one fix or retry (≤ 40). Over
+  budget → one tightened retry → deterministic trim at the last sentence boundary. One message, never
+  a list, enforced in code rather than trusted to the prompt.
+- **`cannot_predict`.** When the tail holds no anchor (the assistant merely stated something), the
+  click spends zero model calls and writes nothing: the icon goes neutral and says so next to itself.
+  Same invariant as `cannot_infer` for bare signals — the system declines to guess rather than
+  inventing a "continue" the context never offered.
+- A `predict` row in the local sample log: kind, anchor source, window size, whether this turn had
+  tool activity, latency, outcome code — joinable by `runId` like every other event.
+
+### Changed
+
+- **Empty sessions render no icon at all.** Previously the star stayed resident at 45% opacity even
+  with nothing to optimize (#the old rationale was positional stability and discoverability). It is
+  gone: an empty conversation shows nothing, and the star appears with your first characters. The
+  prediction icon takes the position once there is a conversation to predict from.
+- **Prediction reads the *tail* of the assistant's last message** (800 chars), where anchors actually
+  live — the existing context extractor kept the first 300, which cut off exactly the questions,
+  offers and option lists a prediction needs.
+
+### Fixed
+
+- **The assistant's own words were being read from the wrong place, everywhere.** A real
+  `assistant/message` event nests its payload — `data.message.{role,content}` — while a
+  `user/message` event is flat (`data.{role,content,source}`). Both the session-context extractor
+  and the signal branch's assistant-tail reader assumed the flat shape, so on this host the assistant
+  tail was **always empty, silently**: prediction refused every single time with a neutral "no
+  predictable next step", and the signal branch's anchors could only ever come from the user's own
+  turns. Confirmed by decoding a live session log rather than by reasoning about it. Shapes are now
+  normalised in one place, and the tests + the real-socket checks use the nested shape the host
+  actually emits.
+- **The assistant tail kept the first 300 characters — exactly the wrong end.** Pending questions,
+  "shall I continue?", and numbered option lists all live at the end of the message, so the anchors
+  the signal branch keys on were being truncated away. The tail is now taken from the end (and the
+  prediction window keeps 800 characters of it).
+- **Failures are visible, not silent.** A failed prediction turns the icon to its warning colour and
+  renders "prediction failed, click to retry" beside it; a neutral refusal renders its reason the same
+  way. Both collapse as soon as you start typing. Previously such a state would have been reachable
+  only through a hover tooltip.
+- **The prediction result never overwrites typing.** The response is dropped when the draft revision
+  moved while the request was in flight (the same draftRev CAS the optimizer uses).
+
 ## [0.9.5] - 2026-10-11
 
 Three of these were found by pointing the plugin's own live route at itself from outside the

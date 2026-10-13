@@ -36,9 +36,16 @@
 
 import {
   AUDIT_MAX_OUTPUT_TOKENS,
+  VIOLATION_KINDS,
+  VIOLATION_LABELS,
+  parseAuditVerdict,
   AUDIT_TEMPERATURE,
   CLARIFY_ONLY_SYSTEM,
   MAX_OUTPUT_TOKENS,
+  MAX_TEXT_LENGTH,
+  PREDICT_MAX_OUTPUT_TOKENS,
+  PREDICT_RETRY_TEMPERATURE,
+  PREDICT_TEMPERATURE,
   SEED_TIGHTEN_SYSTEM,
   TEMPERATURE,
   UNFOLD_RETRY_TEMPERATURE,
@@ -47,8 +54,11 @@ import {
   buildConversationalSystemPrompt,
   buildDeicticSystemPrompt,
   buildElaborateSystemPrompt,
+  buildPredictSystemPrompt,
   buildRepairSystemPrompt,
   buildSignalSystemPrompt,
+  buildUnifiedSystemPrompt,
+  parseUnifiedResult,
   depthSuffix,
   normalizeResult,
   parseAdaptiveResult,
@@ -56,6 +66,7 @@ import {
   renderConversationalUserPrompt,
   renderDeicticUserPrompt,
   renderElaborateUserPrompt,
+  renderPredictUserPrompt,
   renderRepairUserPrompt,
   renderSeedTightenUserPrompt,
   renderSignalUserPrompt,
@@ -63,11 +74,19 @@ import {
   validateInput,
 } from "./prompt-templates.js";
 import {
+  PREDICT_BUDGETS,
+  PREDICT_FALLBACK_MARKER,
+  PREDICT_KIND_LABELS,
+  checkPredictionOutput,
+  trimPredictionToBudget,
+} from "./prediction.js";
+import {
   DEICTIC_FALLBACK_MARKER,
   SIGNAL_FALLBACK_MARKER,
   checkDeicticDegree,
   checkSignalOutput,
   classifySignalInput,
+  conversationalRuleOf,
   inferPendingItem,
   isConversationalMessage,
 } from "./signal-inference.js";
@@ -87,10 +106,20 @@ export const ERROR_CODES = Object.freeze({
   TRUNCATED: "truncated",
   FIDELITY_REJECTED: "fidelity_rejected",
   CANNOT_INFER: "cannot_infer",
+  // 预测分支的中性拒绝：语境里没有可预测的下一步。与 cannot_infer 同构——
+  // 这是系统"拒绝硬猜"，不是故障，界面用中性色而不是红色。
+  CANNOT_PREDICT: "cannot_predict",
   // 传输层错误码：请求体超过路由缓冲上限。它不属于"业务结果"，所以走 HTTP 413
   // 而不是 200+code；放进这张表是为了守住"每个码都有一句可展示文案"的不变量
   // （此前这条路径只会在真实 socket 上表现为连接被重置，客户端连码都拿不到）。
   PAYLOAD_TOO_LARGE: "payload_too_large",
+  // 输出体量失控（T-debug-L5）：截断防护只认 finish=max-tokens，一个 finish=stop
+  // 却吐 1MB 正文的失控 provider 会把整段塞进 composer 输入框。这是确定性拒绝，
+  // 不是可重试的截断——重试同样失控的 provider 没有意义。
+  OUTPUT_TOO_LARGE: "output_too_large",
+  // 整条路由的墙钟超时（T-debug-M4）：deadlineMs 只预算可选调用，必发调用挂起时
+  // 由路由层的中止兜底转成这个码。可重试——provider 慢通常是暂态。
+  REQUEST_TIMEOUT: "request_timeout",
 });
 
 /** 面向用户的中文错误文案（前端 tooltip 直接展示）。 */
@@ -105,7 +134,10 @@ export const ERROR_MESSAGES = Object.freeze({
   truncated: "结果被截断，请缩短输入后重试",
   fidelity_rejected: "优化会改变原意，已保留原文",
   cannot_infer: "上下文不足以推断这个输入的含义，请直接写出想说的内容",
+  cannot_predict: "这段上下文里没有可预测的下一步",
   payload_too_large: "请求体过大，请精简后再优化",
+  output_too_large: "模型输出异常偏大，已保留原文",
+  request_timeout: "模型调用超时，请稍后重试",
 });
 
 /**
@@ -123,6 +155,13 @@ const BLOAT_RATIO = 3.0;
 const THIN_RETRY_TEMPERATURE = 0.5;
 
 /**
+ * 单次模型输出的体量硬上限（字符，T-debug-L5）。输入侧有 MAX_TEXT_LENGTH=8000，
+ * 输出侧此前只认 finish=max-tokens——失控 provider 用 finish=stop 吐 1MB 会被
+ * ok 透传。合法改写不会超过输入上限的 4 倍（补全契约实测 2~3.5×）。
+ */
+const MAX_OUTPUT_CHARS = MAX_TEXT_LENGTH * 4;
+
+/**
  * 可选调用（补全重试 / 收紧重试 / 定向修复）的整体墙钟预算，毫秒。
  *
  * 为什么需要它：主路径最坏要花 4 次调用（改写→审判→修复→复审），provider 一慢就会
@@ -137,24 +176,6 @@ const THIN_RETRY_TEMPERATURE = 0.5;
  */
 export const DEFAULT_DEADLINE_MS = 20000;
 
-/** 审判判决的违规类型 → 归一化标识。ADDED 保留为历史别名，映射到 scope_added。 */
-const VIOLATION_KINDS = Object.freeze({
-  DISTORTED: "distorted",
-  SCOPE_ADDED: "scope_added",
-  CONTRADICTED: "contradicted",
-  TONE_SHIFTED: "tone_shifted",
-  PADDED: "padded",
-  ADDED: "scope_added",
-});
-
-/** 违规类型 → 面向用户的中文说明（拒绝时展示，也让日志可读）。 */
-const VIOLATION_LABELS = Object.freeze({
-  distorted: "改变了原始目标",
-  scope_added: "增加了原本没有的要求",
-  contradicted: "覆盖了你已指定的选择",
-  tone_shifted: "改变了原有语气",
-  padded: "给已明确的指令补了多余步骤",
-});
 
 /** 开放式意图的标记：这些词出现时，模糊是意图本身。 */
 const OPEN_ENDED_PATTERN =
@@ -177,6 +198,10 @@ export function isSubstantivelyUnchanged(input, rewrite) {
   const a = skeletonText(input);
   if (a === "") return false;
   const b = skeletonText(rewrite);
+  // 改写骨架为空 = 内容被删光（纯标点/纯敬语稿）。容差判据对超短骨架本来就宽
+  // （tolerance≥2），不在这里挡下的话，"登录"→"。"会判"未变"并触发精确跳审，
+  // 把一个掏空的稿子直接回填给用户（T-debug-01 实测复现）。
+  if (b === "") return false;
   if (a === b) return true;
   if (a.length > 200 || b.length > 200) return false;
   const tolerance = Math.max(2, Math.floor(a.length * 0.15));
@@ -246,60 +271,6 @@ export function assessInflation(input, rewrite) {
   return { ratio, bloated, openEndedClosed, suspicious: bloated || openEndedClosed };
 }
 
-/**
- * 归一化审判输出。协议极窄，每种问题一行：
- *   "OK"                              → { status: 'ok', violations: [], thin: false }
- *   "THIN: ..."                       → { status: 'ok', violations: [], thin: true }（失职，非失真）
- *   "DISTORTED: a\nSCOPE_ADDED: b"    → { status: 'issues', violations: [{kind,text}...] }
- *   其余（含空）                       → { status: 'unparsable' }（调用方 fail-open）
- *
- * 只有认得出协议行才算判决：夹杂的自然语言行被忽略，避免模型解释性输出被当成判决。
- * @param {string} raw 审判调用的原始输出。
- * @returns {{status: 'ok'|'issues'|'unparsable', violations: {kind: string, text: string}[], thin: boolean}} 归一化判决。
- */
-export function parseAuditVerdict(raw) {
-  const empty = { status: "unparsable", violations: [], thin: false, detail: "" };
-  const cleaned = normalizeResult(raw ?? "").trim();
-  if (cleaned === "") return empty;
-
-  const violations = [];
-  let thin = false;
-  let matched = false;
-  let detail = "";
-  for (const line of cleaned.split(/\n+/)) {
-    const text = line.trim().replace(/^[-*•]\s*/, "");
-    if (text === "") continue;
-    // DETAIL 是"补了什么"的摘要，不是判决：单独取出，供客户端展示凭证（A 项）。
-    const summary = /^DETAIL\s*[:：]\s*(.*)$/i.exec(text);
-    if (summary !== null) {
-      matched = true;
-      const value = summary[1].trim();
-      if (value !== "" && !/^no\s*change/i.test(value) && value !== "无") detail = value;
-      continue;
-    }
-    // 裸 "OK" 行同样是判决（改写无越线）。它必须在这里被识别：早先的实现在函数开头
-    // 用正则短路 "OK"，改写成逐行解析后漏掉了这一步，"OK" 会掉进 unparsable，
-    // 连带把"补全后仍失真"的判定整条打歪（由测试捕获）。
-    if (/^ok\b/i.test(text)) {
-      matched = true;
-      continue;
-    }
-    const match = /^(DISTORTED|SCOPE_ADDED|CONTRADICTED|TONE_SHIFTED|PADDED|ADDED|THIN)\b\s*[:：]?\s*(.*)$/i.exec(text);
-    if (match === null) continue;
-    matched = true;
-    const key = match[1].toUpperCase();
-    if (key === "THIN") {
-      thin = true;
-      continue;
-    }
-    const kind = VIOLATION_KINDS[key];
-    const value = match[2].trim();
-    violations.push({ kind, text: value === "" ? VIOLATION_LABELS[kind] : value });
-  }
-
-  if (!matched) return empty;
-  return { status: violations.length === 0 ? "ok" : "issues", violations, thin, detail };
-}
 
 
 /**
@@ -309,6 +280,10 @@ export function parseAuditVerdict(raw) {
  * @param {string} text 已渲染的 user prompt。
  * @returns {{id: string, role: 'user', content: Array<{type: 'text', text: string}>, source: {kind: 'plugin', plugin: string}}} 消息对象。
  */
+// 违规归一化三件套已下沉到 prompt-templates（统一管线在那边复用同一套归一化）；
+// 此处再导出维持既有导入面不变。
+export { VIOLATION_KINDS, VIOLATION_LABELS, parseAuditVerdict };
+
 export function createOptimizerMessage(text) {
   return {
     id: `po-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
@@ -417,7 +392,19 @@ async function callModel(llm, route, options) {
     return { ok: false, code: ERROR_CODES.TRUNCATED, error: ERROR_MESSAGES.truncated };
   }
 
-  return { ok: true, text: normalizeResult(collected.text) };
+  const text = normalizeResult(collected.text);
+  // 输出体量硬上限（T-debug-L5）：finish=stop 不代表体量合理——实测失控 provider
+  // 能吐 1MB 正文并被 ok 透传进输入框。上限取 4×MAX_TEXT_LENGTH：合法改写在
+  // 补全契约下不会超过输入上限的数倍，超过它只可能是 provider 失控。
+  if (text.length > MAX_OUTPUT_CHARS) {
+    log?.("error", "[prompt-seed] output exceeds the hard size cap", {
+      textLength: text.length,
+      cap: MAX_OUTPUT_CHARS,
+    });
+    return { ok: false, code: ERROR_CODES.OUTPUT_TOO_LARGE, error: ERROR_MESSAGES.output_too_large };
+  }
+
+  return { ok: true, text };
 }
 
 /**
@@ -538,6 +525,80 @@ async function runAudit(params) {
 }
 
 /**
+ * 审判通过/不可用时的结果处理（0.12.0 从 optimizePromptText 抽出；行为不变）。
+ * split 与 unified 两条管线共用：unified 的自审 OK 在这里合成 verdict 对象进入。
+ * THIN 补全链保持原语义——补全稿必须重新过**独立**审判（自审报"薄"的稿子
+ * 恰恰说明自检没把握，不能再用自检兜底）。
+ * @param {object} args 见调用点。
+ * @returns {Promise<object>} 结果对象。
+ */
+async function resolveAuditedOutcome(args) {
+  const { llm, route, auditRoute, original, rewrite, op, routingTag, depth, context, metrics, effort, signal, log, maySpendMore, audit } = args;
+  if (audit?.status === "unparsable") {
+    log?.("warn", "[prompt-seed] audit output unparsable; failing open");
+  }
+
+  // 审判报"太薄"：只对种子输入再补一次。补全稿必须重新过审判——补全最容易
+  // 越线成曲解，不能因为"只是加细节"就免检。补全后仍失真则回退第一稿：
+  // 薄但忠实，比直接拒绝更有用（用户点这个按钮就是想要东西）。
+  // 预算用尽时不做这次补全，直接落到"薄但忠实"的结论——语义完全一致，只是少花一次。
+  if (audit?.thin === true && looksSeedish(original) && maySpendMore("thin-elaboration")) {
+    log?.("warn", "[prompt-seed] audit reports a thin rewrite; elaborating once more", {
+      ratio: Number(metrics.ratio.toFixed(2)),
+    });
+    const elaborated = await callModel(llm, route, {
+      system: buildElaborateSystemPrompt(original) + depthSuffix(depth),
+      user: renderElaborateUserPrompt(original, context),
+      temperature: THIN_RETRY_TEMPERATURE,
+      maxTokens: MAX_OUTPUT_TOKENS,
+      reasoningEffort: effort,
+      signal,
+      log,
+    });
+    if (elaborated.ok && elaborated.text !== "") {
+      // 同上：THIN 补全稿也要剥协议行（T-debug-F5）。
+      const thinElaboratedText = parseAdaptiveResult(elaborated.text).text;
+      if (thinElaboratedText !== "") {
+        const secondAudit = await runAudit({ llm, route, auditRoute, original, rewrite: thinElaboratedText, context, signal, log });
+        if (secondAudit === null || secondAudit.status === "ok") {
+          return {
+            ok: true,
+            text: thinElaboratedText,
+            tier: "elaborated",
+            mode: op,
+            classificationSource: routingTag,
+            gate: { verdict: "ok", repairs: 0, rechecked: true, violations: [] },
+            detail: typeof secondAudit?.detail === "string" ? secondAudit.detail : "",
+          };
+        }
+        log?.("warn", "[prompt-seed] elaboration introduced distortion; keeping the thin but faithful draft", {
+          violations: secondAudit.violations,
+        });
+      }
+    }
+    return {
+      ok: true,
+      text: rewrite.text,
+      tier: "thin",
+      mode: op,
+      classificationSource: routingTag,
+      gate: { verdict: "thin", repairs: 0, rechecked: false, violations: [] },
+      detail: "",
+    };
+  }
+
+  return {
+    ok: true,
+    text: rewrite.text,
+    tier: "full",
+    mode: op,
+    classificationSource: routingTag,
+    gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] },
+    detail: typeof audit?.detail === "string" ? audit.detail : "",
+  };
+}
+
+/**
  * 优化一段用户输入（含保真闸门）。
  *
  * 错误分支按优先级排列，越靠前越先判定：
@@ -576,6 +637,8 @@ async function runAudit(params) {
  */
 async function runSignalInference(args) {
   const { llm, route, text, classified, context, assistantTail, signal, log } = args;
+  // 归因标签：数字信号（含多选）与词信号分开统计——两者的锚点判定路径不同。
+  const classificationSource = "signal-" + (classified.kind === "number" ? "number" : "word");
   const userTurns = Array.isArray(context) ? context : undefined;
   const item = inferPendingItem(classified, userTurns, assistantTail);
   if (item.mode === "none") {
@@ -583,7 +646,7 @@ async function runSignalInference(args) {
       token: classified.token,
       reason: item.reason,
     });
-    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "signal" };
+    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "signal", classificationSource };
   }
 
   const draft = await callModel(llm, route, {
@@ -594,13 +657,13 @@ async function runSignalInference(args) {
     signal,
     log,
   });
-  if (!draft.ok) return { ...draft, mode: "signal" };
+  if (!draft.ok) return { ...draft, mode: "signal", classificationSource };
   if (draft.text === "") {
-    return { ok: false, code: ERROR_CODES.EMPTY_RESULT, error: ERROR_MESSAGES.empty_result, mode: "signal" };
+    return { ok: false, code: ERROR_CODES.EMPTY_RESULT, error: ERROR_MESSAGES.empty_result, mode: "signal", classificationSource };
   }
   if (draft.text.includes(SIGNAL_FALLBACK_MARKER)) {
     log?.("warn", "[prompt-seed] model declined the signal expansion; refusing to guess");
-    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "signal" };
+    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "signal", classificationSource };
   }
 
   const check = checkSignalOutput(draft.text, classified.token, item.anchor, item.mode);
@@ -608,7 +671,7 @@ async function runSignalInference(args) {
     log?.("warn", "[prompt-seed] signal output failed the grounding check; refusing to guess", {
       reason: check.reason,
     });
-    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "signal" };
+    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "signal", classificationSource };
   }
 
   return {
@@ -623,31 +686,46 @@ async function runSignalInference(args) {
 
 /**
  * 短指令分支：动词明确、宾语空缺 → 度契约展开 + 确定性度校验（越界一次收紧重试）。
- * @param {object} args { llm, route, text, context, signal, log }
+ *
+ * 0.9.7 起 accept 助手尾部作为锚点来源（T-debug-F3）：指代词最常指向的正是助手
+ * 刚交付/刚陈述的内容——此前只认用户话轮，"改一下"在助手刚说完话的会话里必然
+ * cannot_infer，尽管锚点近在手边。inferPendingItem 的 deictic 分支（assistant-tail
+ * 优先）写的正是这个语义，这里对齐它：用户话轮与助手尾部任一存在即可展开。
+ * @param {object} args { llm, route, text, context, assistantTail, signal, log }
  * @returns {Promise<object>} 与主流程同构的结果对象。
  */
 async function runDeicticExpansion(args) {
-  const { llm, route, text, context, signal, log } = args;
-  if (!Array.isArray(context) || context.length === 0) {
+  const { llm, route, text, context, assistantTail, signal, log } = args;
+  const classificationSource = "deictic";
+  const userTurns = Array.isArray(context) ? context.filter((item) => item && typeof item.text === "string" && item.text.trim() !== "") : [];
+  const assistantText =
+    typeof assistantTail?.text === "string" && assistantTail.text.trim() !== "" ? assistantTail.text : undefined;
+  if (userTurns.length === 0 && assistantText === undefined) {
     log?.("warn", "[prompt-seed] deictic directive without conversation context; refusing to guess");
-    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "deictic" };
+    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "deictic", classificationSource };
   }
+  // 助手尾部是时间上最近的一条消息，排在用户话轮之后；度契约的 CONTEXT 块按
+  // 时间正序渲染，模型才能把"刚才"对到正确的指代物上。
+  const promptContext =
+    assistantText === undefined
+      ? userTurns
+      : userTurns.concat([{ role: "assistant", text: assistantText }]);
 
   let draft = await callModel(llm, route, {
     system: buildDeicticSystemPrompt(),
-    user: renderDeicticUserPrompt(text, context),
+    user: renderDeicticUserPrompt(text, promptContext),
     temperature: 0.2,
     maxTokens: 280,
     signal,
     log,
   });
-  if (!draft.ok) return { ...draft, mode: "deictic" };
+  if (!draft.ok) return { ...draft, mode: "deictic", classificationSource };
   if (draft.text === "") {
-    return { ok: false, code: ERROR_CODES.EMPTY_RESULT, error: ERROR_MESSAGES.empty_result, mode: "deictic" };
+    return { ok: false, code: ERROR_CODES.EMPTY_RESULT, error: ERROR_MESSAGES.empty_result, mode: "deictic", classificationSource };
   }
   if (draft.text.includes(DEICTIC_FALLBACK_MARKER)) {
     log?.("warn", "[prompt-seed] model could not resolve the referent; refusing to guess");
-    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "deictic" };
+    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "deictic", classificationSource };
   }
 
   let check = checkDeicticDegree(draft.text, text);
@@ -657,7 +735,7 @@ async function runDeicticExpansion(args) {
     });
     const retry = await callModel(llm, route, {
       system: buildDeicticSystemPrompt({ tightened: true }),
-      user: renderDeicticUserPrompt(text, context),
+      user: renderDeicticUserPrompt(text, promptContext),
       temperature: 0.4,
       maxTokens: 240,
       signal,
@@ -671,6 +749,7 @@ async function runDeicticExpansion(args) {
           text: retry.text,
           tier: "deictic",
           mode: "deictic",
+          classificationSource,
           gate: { verdict: "ok", repairs: 1, rechecked: true, violations: [] },
           detail: "短指令→按度展开（一次收紧）",
         };
@@ -681,12 +760,13 @@ async function runDeicticExpansion(args) {
       code: ERROR_CODES.FIDELITY_REJECTED,
       error: ERROR_MESSAGES.fidelity_rejected,
       mode: "deictic",
+      classificationSource,
       violations: [{ kind: "scope_added", text: "短指令发散越界（超出用户词语的自然子部件）" }],
     };
   }
   if (!check.ok) {
     log?.("warn", "[prompt-seed] deictic draft failed the degree check", { reason: check.reason });
-    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "deictic" };
+    return { ok: false, code: ERROR_CODES.CANNOT_INFER, error: ERROR_MESSAGES.cannot_infer, mode: "deictic", classificationSource };
   }
 
   return {
@@ -694,6 +774,7 @@ async function runDeicticExpansion(args) {
     text: draft.text,
     tier: "deictic",
     mode: "deictic",
+    classificationSource,
     gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] },
     detail: "短指令→按度展开",
   };
@@ -710,9 +791,15 @@ async function runDeicticExpansion(args) {
  * @returns {Promise<object>} 与主流程同构的结果对象。
  */
 async function runConversationalTouchup(args) {
-  const { llm, route, text, signal, log } = args;
+  const { llm, route, text, source, signal, log } = args;
+  // 归因标签由调用方给：会话分支五条规则、助手问句划界、澄清兜底各不相同。
+  const classificationSource = typeof source === "string" && source !== "" ? source : "conversational";
   const cap = Math.ceil(text.length * 1.35) + 6;
   const maxTokens = Math.min(480, Math.max(160, text.length * 2));
+  // 轻润色的稿子也剥协议行：模型偶发带 MODE 头时，"MODE: clarify"会整行漏进
+  // 输入框（T-debug-F5 实测 clarify 兜底路径）。轻润色契约本身无 MODE，剥掉
+  // 不影响合法输出。
+  const parse = (raw) => parseAdaptiveResult(raw).text;
 
   const draft = await callModel(llm, route, {
     system: buildConversationalSystemPrompt(),
@@ -724,17 +811,18 @@ async function runConversationalTouchup(args) {
   });
   if (!draft.ok) {
     log?.("warn", "[prompt-seed] conversational touchup failed; returning the original");
-    return { ok: true, text, tier: "conversational", mode: "conversational",
+    return { ok: true, text, tier: "conversational", mode: "conversational", classificationSource,
       gate: { verdict: "unverified", repairs: 0, rechecked: false, violations: [] }, detail: "会话消息→原文返回" };
   }
-  if (draft.text === "" ) {
-    return { ok: true, text, tier: "conversational", mode: "conversational",
+  const draftText = parse(draft.text);
+  if (draftText === "" ) {
+    return { ok: true, text, tier: "conversational", mode: "conversational", classificationSource,
       gate: { verdict: "unverified", repairs: 0, rechecked: false, violations: [] }, detail: "会话消息→原文返回" };
   }
 
-  if (draft.text.length > cap) {
+  if (draftText.length > cap) {
     log?.("warn", "[prompt-seed] conversational draft exceeded the cap; one tightened retry", {
-      inputChars: text.length, outputChars: draft.text.length, cap,
+      inputChars: text.length, outputChars: draftText.length, cap,
     });
     const retry = await callModel(llm, route, {
       system: buildConversationalSystemPrompt({ tightened: true }),
@@ -744,23 +832,124 @@ async function runConversationalTouchup(args) {
       signal,
       log,
     });
-    if (retry.ok && retry.text !== "" && retry.text.length <= cap) {
-      return { ok: true, text: retry.text, tier: "conversational", mode: "conversational",
-        gate: { verdict: "unverified", repairs: 1, rechecked: false, violations: [] }, detail: "会话消息→轻润色（一次收紧）" };
+    if (retry.ok) {
+      const retryText = parse(retry.text);
+      if (retryText !== "" && retryText.length <= cap) {
+        return { ok: true, text: retryText, tier: "conversational", mode: "conversational", classificationSource,
+          gate: { verdict: "unverified", repairs: 1, rechecked: false, violations: [] }, detail: "会话消息→轻润色（一次收紧）" };
+      }
     }
-    return { ok: true, text, tier: "conversational", mode: "conversational",
+    return { ok: true, text, tier: "conversational", mode: "conversational", classificationSource,
       gate: { verdict: "unverified", repairs: 0, rechecked: false, violations: [] }, detail: "会话消息→原文返回" };
   }
 
   // 上限内的稿子一律采纳：轻润色的"实质未变"是常态而非失败（补全闸的
   // 语义在这里恰好相反），它只决定凭证文案，不决定取舍。
-  const unchanged = isSubstantivelyUnchanged(text, draft.text);
-  return { ok: true, text: draft.text, tier: "conversational", mode: "conversational",
+  const unchanged = isSubstantivelyUnchanged(text, draftText);
+  return { ok: true, text: draftText, tier: "conversational", mode: "conversational", classificationSource,
     gate: { verdict: "unverified", repairs: 0, rechecked: false, violations: [] },
     detail: unchanged ? "会话消息→未改动" : "会话消息→轻润色" };
 }
+/** seed 收紧带的倍率上限（0.10.0 从 optimizePromptText 移出为模块常量）。 */
+const SEED_TIGHTEN_RATIO = 3.5;
+
+/**
+ * seed 收紧带（0.10.0 从 optimizePromptText 抽出；行为不变）。
+ *
+ * samples.jsonl 实测：≥15 字的输入补到 2.0~2.6× 被采纳发送；5.4×/5.8× 两次被
+ * 撤销或手动重跑。真·微种子（登录、帮我做个X，<15 字）不受此带约束——它们
+ * 本来就该大幅展开。超带 → 一次收紧重试（不带深度后缀，避免催长），取更短者，
+ * 保证结果不会比第一稿更胖；不因仍超带而拒绝（种子宁可厚，不可空手）。
+ * @param {object} args { llm, route, trimmed, rewrite, signal, log }。
+ * @returns {Promise<{ok: boolean, text: string}>} 收紧后的稿子（失败时原样返回）。
+ */
+/**
+ * 剥掉可能混入的统一协议段（0.12.0 防御）：后置调用（收紧/补全）用的不是统一
+ * 契约，但格式漂移时模型可能仍按 DRAFT/AUDIT/FINAL 排版——先按统一协议解析取
+ * FINAL，不行再走自适应解析。任何路径都不得把协议字样写回输入框。
+ * @param {string} raw 模型输出。
+ * @returns {string} 剥净的正文。
+ */
+function stripUnifiedProtocol(raw) {
+  const unified = parseUnifiedResult(raw);
+  if (!unified.malformed) return unified.final;
+  return parseAdaptiveResult(raw).text;
+}
+
+async function tightenSeedDraft(args) {
+  const { llm, route, trimmed, rewrite, op, signal, log } = args;
+  if (op !== "seed" || trimmed.length < 15 || rewrite.text.length <= trimmed.length * SEED_TIGHTEN_RATIO) {
+    return rewrite;
+  }
+  log?.("warn", "[prompt-seed] seed draft far exceeds the input's weight; tightening once", {
+    inputChars: trimmed.length, outputChars: rewrite.text.length,
+  });
+  const tightened = await callModel(llm, route, {
+    system: SEED_TIGHTEN_SYSTEM,
+    user: renderSeedTightenUserPrompt(trimmed, rewrite.text),
+    temperature: 0,
+    maxTokens: MAX_OUTPUT_TOKENS,
+    signal,
+    log,
+  });
+  if (!tightened.ok) return rewrite;
+  const tightenedText = stripUnifiedProtocol(tightened.text);
+  if (tightenedText === "" || tightenedText.length >= rewrite.text.length) return rewrite;
+  return { ...tightened, text: tightenedText };
+}
+
+/**
+ * 补全闸（0.10.0 从 optimizePromptText 抽出；行为不变）。
+ *
+ * 服务端在 temperature=0 下仍有方差：种子型输入的第一稿约半数只做标点级微调就
+ * 返回。这里用确定性检查抓出"实质未变"，用强化指令最多重试两次（温度 0.4 → 0.7
+ * 递增扰动；零温度重试实测与第一稿采样相同，等于白跑）。精确输入不走此闸——
+ * 它本来就该接近原样，再"补全"正好是要治的加戏。
+ * @param {object} args { llm, route, trimmed, rewrite, op, depth, context, signal, log, maySpendMore }。
+ * @returns {Promise<{ok: boolean, text: string}>} 补全后的稿子（不适用/失败时原样返回）。
+ */
+async function unfoldRetryIfNeeded(args) {
+  const { llm, route, trimmed, op, depth, context, reasoningEffort, signal, log, maySpendMore, holdDraft } = args;
+  let rewrite = args.rewrite;
+  // holdDraft：自审已修过的终稿不再进补全闸——修复把越线处摘掉后落回贴近原文
+  // 是修复的正确结局；补全闸的职责是抓"第一稿什么都没干"，不是推翻修复。
+  if (holdDraft === true) return rewrite;
+  if (!(op === "seed" && isSubstantivelyUnchanged(trimmed, rewrite.text) && looksOpenEnded(trimmed))) {
+    return rewrite;
+  }
+  for (const temperature of [UNFOLD_RETRY_TEMPERATURE, UNFOLD_RETRY_TEMPERATURE + 0.3]) {
+    if (!maySpendMore("unfold-retry")) break;
+    log?.("warn", "[prompt-seed] rewrite is substantively unchanged; retrying with elaboration", { temperature });
+    const elaborated = await callModel(llm, route, {
+      system: buildElaborateSystemPrompt(trimmed) + depthSuffix(depth),
+      user: renderElaborateUserPrompt(trimmed, context),
+      temperature,
+      maxTokens: MAX_OUTPUT_TOKENS,
+      reasoningEffort: reasoningEffort,
+      signal,
+      log,
+    });
+    if (!elaborated.ok || elaborated.text === "") break;
+    // 协议行必须剥：补全契约的输出若带 MODE 头或统一协议段（格式漂移），
+    // 原样写回会把协议文本漏进输入框（T-debug-F5/T-uni，与首稿同一处理）。
+    const elaboratedText = stripUnifiedProtocol(elaborated.text);
+    if (elaboratedText === "") break;
+    // 与原实现一致：每次尝试都采纳为当前稿（哪怕骨架仍未变——措辞可能更接近
+    // 可用），直到某一稿骨架真正展开才停。
+    rewrite = { ...elaborated, text: elaboratedText };
+    if (!isSubstantivelyUnchanged(trimmed, rewrite.text)) break;
+  }
+  return rewrite;
+}
 export async function optimizePromptText(options) {
   const { llm, route, auditRoute, text, context, signal, log } = options ?? {};
+  // 推理力度透传（0.10.1）：inheritReasoningEffort 为真时，生成型改写调用跟随
+  // 路由自带的 reasoningEffort；缺省 undefined = callModel 不下发该字段（旧行为）。
+  // 审判与 seed 压缩永远不带——它们的职责是快与稳，不是深思。
+  const effort =
+    options?.inheritReasoningEffort === true && typeof route?.reasoningEffort === "string"
+      ? route.reasoningEffort
+      : undefined;
   // 可选调用（补全重试 / 收紧重试 / 定向修复）的墙钟预算起点。第 3、4 次调用只在
   // 第一稿越线时才发生，是唯一可以"跳过而不改变诚实结论"的开销，见 DEFAULT_DEADLINE_MS。
   const startedAt = Date.now();
@@ -792,7 +981,7 @@ export async function optimizePromptText(options) {
   // 实测：hi 空转 5.4s、你好 被拒 8.5s。这里直接给出中性结论，用户不白等。
   if (isContentFree(text)) {
     log?.("warn", "[prompt-seed] input has no actionable content; skipping model calls");
-    return { ok: false, code: ERROR_CODES.NOTHING_TO_OPTIMIZE, error: ERROR_MESSAGES.nothing_to_optimize };
+    return { ok: false, code: ERROR_CODES.NOTHING_TO_OPTIMIZE, error: ERROR_MESSAGES.nothing_to_optimize, classificationSource: "content-free" };
   }
 
   if (llm === undefined || llm === null || typeof llm.stream !== "function") {
@@ -818,7 +1007,10 @@ export async function optimizePromptText(options) {
     });
   }
   if (signalClass.kind === "deictic") {
-    return await runDeicticExpansion({ llm, route, text: trimmed, context, signal, log });
+    return await runDeicticExpansion({
+      llm, route, text: trimmed, context,
+      assistantTail: options.assistantTail, signal, log,
+    });
   }
 
   // ---- 会话消息分支（0.9.1，确定性分类，不花调用）----
@@ -826,7 +1018,10 @@ export async function optimizePromptText(options) {
   // （方向性失真，SCOPE_ADDED 按任务种子定义拦不住）。命中即只做轻润色，
   // 失败兜底是原文——本分支永不拒绝。
   if (isConversationalMessage(trimmed)) {
-    return await runConversationalTouchup({ llm, route, text: trimmed, signal, log });
+    return await runConversationalTouchup({
+      llm, route, text: trimmed, signal, log,
+      source: "conversational-" + (conversationalRuleOf(trimmed) ?? "unknown"),
+    });
   }
 
   // ---- 模式选择（自适应契约：模型判意图，代码管约束）----
@@ -845,10 +1040,10 @@ export async function optimizePromptText(options) {
   const assistantQuestionMessage =
     trimmed.length <= 60 &&
     !/[\\/:]/.test(trimmed) &&
-    /[\uFF1F?]|做什么|怎么办|怎么弄|干什么|干啥|下一步|接下来|要不要/.test(trimmed);
+    /[\uFF1F?]|做什么|怎么办|怎么弄|干什么|干啥|下一步|接下来|要不要|\bwhat\s+(should|do)\s+i\b|\bwhat'?s\s+next\b|\bnext\s+step\b|\bshall\s+i\b|\bdo\s+you\s+want\b/i.test(trimmed);
   if (assistantQuestionMessage && !isPreciseInstruction(trimmed)) {
     log?.("warn", "[prompt-seed] assistant-question shaped input routed to conversational touch-up");
-    return await runConversationalTouchup({ llm, route, text: trimmed, signal, log });
+    return await runConversationalTouchup({ llm, route, text: trimmed, signal, log, source: "assistant-question" });
   }
 
   // 精确模式跳审时的凭证：没有审判可报，如实标 unverified，不伪装成"保真通过"。
@@ -857,17 +1052,52 @@ export async function optimizePromptText(options) {
   // ---- 第一稿：自适应改写（先声明缺什么，再做对应操作）----
   // 不透传 reasoningEffort：改写是轻任务，max 档深推理让输出路径发散
   // （同一输入时而补全时而原样的实测方差来源）且拖慢数秒。
+  //
+  // 0.12.0 起有两条管线（options.pipeline，缺省 split 维持旧行为）：
+  //   split   —— 改写与审判两次独立调用（历史默认：同上下文自检倾向报喜）。
+  //   unified —— 同一次调用内 DRAFT→AUDIT→FINAL（自审契约见 prompt-templates）。
+  //              协议残缺时自动降级为 split 语义（用同一段文本走独立审判），
+  //              因此 unified 的质量下界就是 split，上界省一整次调用。
+  const pipeline = options.pipeline === "unified" ? "unified" : "split";
+  /** 统一管线的自审结果（split 恒为 null）；审判段的消费逻辑见下方。 */
+  let selfAudit = null;
+  /** 统一管线的原始 DRAFT（区分"没修"与"修了"的判据）。 */
+  let unifiedDraft = "";
   let rewrite = await callModel(llm, route, {
-    system: buildAdaptiveSystemPrompt(trimmed) + depthSuffix(depth),
+    system: (pipeline === "unified" ? buildUnifiedSystemPrompt(trimmed) : buildAdaptiveSystemPrompt(trimmed)) + depthSuffix(depth),
     user: renderUserPrompt(trimmed, context),
     temperature: TEMPERATURE,
     maxTokens: MAX_OUTPUT_TOKENS,
+    reasoningEffort: effort,
     signal,
     log,
   });
   if (!rewrite.ok) return rewrite;
-  const parsed = parseAdaptiveResult(rewrite.text);
-  rewrite = { ...rewrite, text: parsed.text };
+  let parsed;
+  if (pipeline === "unified") {
+    const unified = parseUnifiedResult(rewrite.text);
+    if (unified.malformed) {
+      // 协议没成形不是用户的问题：降级为 split 语义，让独立审判接管同一段文本。
+      log?.("warn", "[prompt-seed] unified protocol malformed; degrading to the split audit", {
+        hasMode: unified.declared,
+      });
+      parsed = parseAdaptiveResult(rewrite.text);
+      rewrite = { ...rewrite, text: parsed.text };
+    } else {
+      selfAudit = unified.audit;
+      unifiedDraft = unified.draft;
+      parsed = { op: unified.op, text: unified.final, declared: unified.declared };
+      rewrite = { ...rewrite, text: unified.final };
+      if (selfAudit !== null && selfAudit.status === "issues") {
+        log?.("warn", "[prompt-seed] unified self-audit reported violations", {
+          violations: selfAudit.violations,
+        });
+      }
+    }
+  } else {
+    parsed = parseAdaptiveResult(rewrite.text);
+    rewrite = { ...rewrite, text: parsed.text };
+  }
   if (!parsed.declared) {
     log?.("warn", "[prompt-seed] adaptive output missing the MODE line; defaulting to seed");
   }
@@ -876,13 +1106,16 @@ export async function optimizePromptText(options) {
   // clarify 校验；胖稿自然落入收紧重试与会话兜底，用户拿到的永远是 ≤1.5× 或 1.0×。
   const checkShaped = parsed.op === "seed" && /能不能|行不行|是不是|好不好/.test(trimmed) && trimmed.length >= 15;
   const op = checkShaped ? "clarify" : parsed.op;
+  // 路由归因：管线（unified/adaptive）× 档位 × 是否确定性层强制改判，分开统计。
+  const routingTag =
+    (selfAudit !== null ? "unified-" : "adaptive-") + (checkShaped ? "clarify-forced" : op);
   if (checkShaped) {
     log?.("warn", "[prompt-seed] check-shaped input; enforcing clarify regardless of declaration");
   }
   const precise = op === "precise";
   if (rewrite.text === "") {
     log?.("error", "[prompt-seed] model returned empty text after normalization");
-    return { ok: false, code: ERROR_CODES.EMPTY_RESULT, error: ERROR_MESSAGES.empty_result, mode: op };
+    return { ok: false, code: ERROR_CODES.EMPTY_RESULT, error: ERROR_MESSAGES.empty_result, mode: op, classificationSource: routingTag };
   }
 
   // ---- 澄清度约束（纯代码，不劳模型判断）----
@@ -900,6 +1133,7 @@ export async function optimizePromptText(options) {
       user: renderUserPrompt(trimmed, context),
       temperature: 0.3,
       maxTokens: MAX_OUTPUT_TOKENS,
+      reasoningEffort: effort,
       signal,
       log,
     });
@@ -910,64 +1144,41 @@ export async function optimizePromptText(options) {
       // 不再把用户晾在空手而归上：澄清两次都收不住 → 会话级轻润色兜底（1.0×，
       // 必有产出）。真实数据里两条祈使消息撞进这条路，硬拒绝的体验是"点了没用"。
       log?.("warn", "[prompt-seed] clarify still over budget; falling back to conversational touch-up");
-      return await runConversationalTouchup({ llm, route, text: trimmed, signal, log });
+      return await runConversationalTouchup({ llm, route, text: trimmed, signal, log, source: "clarify-fallback" });
     }
   }
   // 澄清不得丢失锚定词：指代理顺不能顺手改掉路径/标识符/数字。同样走会话兜底
   //（轻润色以原文为底，锚定词天然保全），不空手而归。
   if (op === "clarify" && !preservesAnchors(trimmed, rewrite.text)) {
     log?.("warn", "[prompt-seed] clarify lost anchors; falling back to conversational touch-up");
-    return await runConversationalTouchup({ llm, route, text: trimmed, signal, log });
+    return await runConversationalTouchup({ llm, route, text: trimmed, signal, log, source: "clarify-fallback" });
+  }
+
+  // ---- 澄清确定性短路（0.10.0，延迟优化）----
+  // 走到这里的一定是 clarify 且已过 1.5× 预算与锚定词守恒（上方两块保证）；
+  // 再加 0.7× 下限（防丢内容）后，剩余的语义级失真风险与 conversational 分支的
+  // unverified 交付同级——真实使用分布（samples.jsonl）里 conversational 的
+  // 0.94–1.06× 稿全部被 submitted 接受。省下的是最重的一次审判调用（实测占
+  // 整条路径约四成延迟），clarify 点击从约 8s 降到约 4s。
+  // 顺带的正确性收益：带内近原样的澄清稿不再进 THIN→补全链——那条链会把
+  // 检查型完整请求（"看看X能不能用"）扩成清单，正是真实撤销样本的形态。
+  if (op === "clarify" && rewrite.text.length >= Math.floor(trimmed.length * 0.7)) {
+    log?.("warn", "[prompt-seed] clarify draft inside the deterministic band; skipping the audit call", {
+      inputChars: trimmed.length,
+      outputChars: rewrite.text.length,
+    });
+    return { ok: true, text: rewrite.text, tier: "full", mode: op, gate: unverifiedGate, detail: "", classificationSource: routingTag };
   }
 
 
-  // ---- seed 收紧带（真实行为划界，纯代码触发）----
-  // samples.jsonl 实测：≥15 字的输入补到 2.0~2.6× 被采纳发送；5.4×/5.8× 两次被
-  // 撤销或手动重跑。真·微种子（登录、帮我做个X，<15 字）不受此带约束——它们
-  // 本来就该大幅展开。超带 → 一次收紧重试（不带深度后缀，避免催长），取更短者，
-  // 保证结果不会比第一稿更胖；不因仍超带而拒绝（种子宁可厚，不可空手）。
-  const SEED_TIGHTEN_RATIO = 3.5;
-  if (op === "seed" && trimmed.length >= 15 && rewrite.text.length > trimmed.length * SEED_TIGHTEN_RATIO) {
-    log?.("warn", "[prompt-seed] seed draft far exceeds the input's weight; tightening once", {
-      inputChars: trimmed.length, outputChars: rewrite.text.length,
-    });
-    const tightened = await callModel(llm, route, {
-      system: SEED_TIGHTEN_SYSTEM,
-      user: renderSeedTightenUserPrompt(trimmed, rewrite.text),
-      temperature: 0,
-      maxTokens: MAX_OUTPUT_TOKENS,
-      signal,
-      log,
-    });
-    if (tightened.ok) {
-      const tightenedText = parseAdaptiveResult(tightened.text).text;
-      if (tightenedText !== "" && tightenedText.length < rewrite.text.length) {
-        rewrite = { ...tightened, text: tightenedText };
-      }
-    }
-  }
-  // ---- 补全闸（纯代码判定，不加 LLM 判断）----
-  // 服务端在 temperature=0 下仍有方差：种子型输入的第一稿约半数只做标点级微调就
-  // 返回。这里用确定性检查抓出"实质未变"，用强化指令最多重试两次（温度 0.4 → 0.7
-  // 递增扰动；零温度重试实测与第一稿采样相同，等于白跑）。精确输入不走此闸——
-  // 它本来就该接近原样，再"补全"正好是上面要治的加戏。
-  if (op === "seed" && isSubstantivelyUnchanged(trimmed, rewrite.text) && looksOpenEnded(trimmed)) {
-    for (const temperature of [UNFOLD_RETRY_TEMPERATURE, UNFOLD_RETRY_TEMPERATURE + 0.3]) {
-      if (!maySpendMore("unfold-retry")) break;
-      log?.("warn", "[prompt-seed] rewrite is substantively unchanged; retrying with elaboration", { temperature });
-      const elaborated = await callModel(llm, route, {
-        system: buildElaborateSystemPrompt(trimmed) + depthSuffix(depth),
-        user: renderElaborateUserPrompt(trimmed, context),
-        temperature,
-        maxTokens: MAX_OUTPUT_TOKENS,
-        signal,
-        log,
-      });
-      if (!elaborated.ok || elaborated.text === "") break;
-      rewrite = elaborated;
-      if (!isSubstantivelyUnchanged(trimmed, rewrite.text)) break;
-    }
-  }
+  // ---- seed 收紧带 / 补全闸（实现见同名模块级函数）----
+  rewrite = await tightenSeedDraft({ llm, route, trimmed, rewrite, op, signal, log });
+  rewrite = await unfoldRetryIfNeeded({
+    llm, route, trimmed, rewrite, op, depth, context, reasoningEffort: effort, signal, log, maySpendMore,
+    // 修复稿或自审报薄时都由后续专责路径处理（修复交付 / THIN 补全链），
+    // 补全闸不再重复展开——实测两者叠加会把一次自审 THIN 变成三次补全调用。
+    holdDraft: selfAudit !== null && (selfAudit.status === "issues" || selfAudit.thin === true),
+  });
 
   // ---- 失真审判 ----
   const metrics = assessInflation(trimmed, rewrite.text);
@@ -981,67 +1192,71 @@ export async function optimizePromptText(options) {
     log?.("warn", "[prompt-seed] precise input kept near-identical; skipping the audit call", {
       ratio: Number(metrics.ratio.toFixed(2)),
     });
-    return { ok: true, text: rewrite.text, tier: "full", mode: op, gate: unverifiedGate, detail: "" };
+    return { ok: true, text: rewrite.text, tier: "full", mode: op, gate: unverifiedGate, detail: "", classificationSource: routingTag };
+  }
+
+  // ---- 统一管线的自审消费（0.12.0）----
+  // 约束力四层中的后两层在这里兑现：终稿已过上方全部确定性校验（预算带/锚定词/
+  // 收紧带/实质未变），现在按自审结果分流——
+  //   自审 OK（含 THIN）→ 合成一个 verdict 对象，走既有返回/补全链，省掉独立审判调用；
+  //   自审有违规 → FINAL 必须是真修（与 DRAFT 实质不同）才交付；假修直接按自报违规
+  //   拒绝，绝不接受"报了但没修"。降级路径（malformed）的 selfAudit 为 null，
+  //   自然落进下方独立审判——质量下界即 split。
+  if (selfAudit !== null && op !== "precise") {
+    // precise 例外：实测统一协议下模型对精确输入倾向扩写且自审放行（自检报喜
+    // 的失效模式）——precise 且非近原样的稿子不信任自审，照走独立审判。
+    if (selfAudit.status === "ok") {
+      // THIN 语义与独立审判一致：种子输入走既有补全链（那次补全会再过独立审判）。
+      const synthesized = { status: "ok", violations: [], thin: selfAudit.thin, detail: selfAudit.detail ?? "" };
+      return await resolveAuditedOutcome({
+        llm, route, auditRoute, original: trimmed, rewrite, op, routingTag, depth, context,
+        metrics, effort, signal, log, maySpendMore,
+        audit: synthesized,
+      });
+    }
+    // 自审报违规：FINAL 与 DRAFT 逐字相同 = 没修，按违规拒绝（绑定力）。
+    // 刻意不用骨架级比较：小稿删一个从句（真修）可能仍在编辑距离容差内，
+    // 骨架判据会把真修误杀成假修。逐字判据只拦"原样抄一遍"这种明确没修的。
+    const fixedForReal = normalizeResult(unifiedDraft).trim() !== rewrite.text.trim();
+    if (!fixedForReal) {
+      log?.("warn", "[prompt-seed] unified final did not fix the self-reported violations; rejecting", {
+        violations: selfAudit.violations,
+      });
+      return {
+        ok: false,
+        code: ERROR_CODES.FIDELITY_REJECTED,
+        error: ERROR_MESSAGES.fidelity_rejected,
+        mode: op,
+        classificationSource: routingTag,
+        added: selfAudit.violations.map((item) => item.text),
+        violations: selfAudit.violations.map((item) => ({
+          kind: item.kind,
+          label: VIOLATION_LABELS[item.kind] ?? item.kind,
+          text: item.text,
+        })),
+        rejected: rewrite.text,
+      };
+    }
+    // 真修：交付修复稿，凭证如实标 repaired（自审修复，无独立复核）。
+    return {
+      ok: true,
+      text: rewrite.text,
+      tier: "repaired",
+      mode: op,
+      classificationSource: routingTag,
+      gate: { verdict: "repaired", repairs: 1, rechecked: false, violations: selfAudit.violations },
+      detail: typeof selfAudit.detail === "string" ? selfAudit.detail : "",
+    };
   }
 
   const audit = await runAudit({ llm, route, auditRoute, original: trimmed, rewrite: rewrite.text, context, signal, log });
   const auditDetail = typeof audit?.detail === "string" ? audit.detail : "";
 
   if (audit === null || audit.status === "unparsable" || audit.status === "ok") {
-    if (audit?.status === "unparsable") {
-      log?.("warn", "[prompt-seed] audit output unparsable; failing open");
-    }
-
-    // 审判报"太薄"：只对种子输入再补一次。补全稿必须重新过审判——补全最容易
-    // 越线成曲解，不能因为"只是加细节"就免检。补全后仍失真则回退第一稿：
-    // 薄但忠实，比直接拒绝更有用（用户点这个按钮就是想要东西）。
-    // 预算用尽时不做这次补全，直接落到"薄但忠实"的结论——语义完全一致，只是少花一次。
-    if (audit?.thin === true && looksSeedish(trimmed) && maySpendMore("thin-elaboration")) {
-      log?.("warn", "[prompt-seed] audit reports a thin rewrite; elaborating once more", {
-        ratio: Number(metrics.ratio.toFixed(2)),
-      });
-      const elaborated = await callModel(llm, route, {
-        system: buildElaborateSystemPrompt(trimmed) + depthSuffix(depth),
-        user: renderElaborateUserPrompt(trimmed, context),
-        temperature: THIN_RETRY_TEMPERATURE,
-        maxTokens: MAX_OUTPUT_TOKENS,
-        signal,
-        log,
-      });
-      if (elaborated.ok && elaborated.text !== "") {
-        const secondAudit = await runAudit({ llm, route, auditRoute, original: trimmed, rewrite: elaborated.text, context, signal, log });
-        if (secondAudit === null || secondAudit.status === "ok") {
-          return {
-            ok: true,
-            text: elaborated.text,
-            tier: "elaborated",
-            mode: op,
-            gate: { verdict: "ok", repairs: 0, rechecked: true, violations: [] },
-            detail: typeof secondAudit?.detail === "string" ? secondAudit.detail : "",
-          };
-        }
-        log?.("warn", "[prompt-seed] elaboration introduced distortion; keeping the thin but faithful draft", {
-          violations: secondAudit.violations,
-        });
-      }
-      return {
-        ok: true,
-        text: rewrite.text,
-        tier: "thin",
-        mode: op,
-        gate: { verdict: "thin", repairs: 0, rechecked: false, violations: [] },
-        detail: "",
-      };
-    }
-
-    return {
-      ok: true,
-      text: rewrite.text,
-      tier: "full",
-      mode: op,
-      gate: { verdict: "ok", repairs: 0, rechecked: false, violations: [] },
-      detail: auditDetail,
-    };
+    return await resolveAuditedOutcome({
+      llm, route, auditRoute, original: trimmed, rewrite, op, routingTag, depth, context,
+      metrics, effort, signal, log, maySpendMore, audit,
+    });
   }
 
   // ---- 失真：定向修复（保留已补细节，只摘越线处）----
@@ -1070,6 +1285,7 @@ export async function optimizePromptText(options) {
     code: ERROR_CODES.FIDELITY_REJECTED,
     error: ERROR_MESSAGES.fidelity_rejected,
     mode: op,
+    classificationSource: routingTag,
     added: violationTexts,
     violations: audit.violations.map((item) => ({
       kind: item.kind,
@@ -1092,10 +1308,11 @@ export async function optimizePromptText(options) {
     user: renderRepairUserPrompt(trimmed, violationTexts, context),
     temperature: TEMPERATURE,
     maxTokens: MAX_OUTPUT_TOKENS,
+    reasoningEffort: effort,
     signal,
     log,
   });
-  if (!repaired.ok) return { ...repaired, mode: op };
+  if (!repaired.ok) return { ...repaired, mode: op, classificationSource: routingTag };
   if (repaired.text === "") {
     log?.("error", "[prompt-seed] repair retry returned empty text");
     return rejectForFidelity(rewrite.text);
@@ -1113,6 +1330,7 @@ export async function optimizePromptText(options) {
       text: repaired.text,
       tier: "repaired",
       mode: op,
+      classificationSource: routingTag,
       gate: { ...repairGate, rechecked: true },
       detail: typeof repairedAudit?.detail === "string" && repairedAudit.detail !== "" ? repairedAudit.detail : auditDetail,
     };
@@ -1131,6 +1349,7 @@ export async function optimizePromptText(options) {
     code: ERROR_CODES.FIDELITY_REJECTED,
     error: ERROR_MESSAGES.fidelity_rejected,
     mode: op,
+    classificationSource: routingTag,
     added: repairedTexts,
     // 结构化违规：客户端用 kind 渲染中文类别（"增加了原本没有的要求"），
     // 而不是把模型的原句直接糊到界面上——后者读起来像内部日志。
@@ -1142,3 +1361,110 @@ export async function optimizePromptText(options) {
     rejected: repaired.text,
   };
 }
+
+/**
+ * 预测用户的下一步输入（0.9.6）。
+ *
+ * 与 optimizePromptText 的关系：那条管线作用在**用户已经写下的草稿**上（改写、审判、
+ * 修复），本函数没有输入文本——它读会话尾部，产出用户接下来最可能发的那一句话。
+ * 因此这里不需要审判闸门（没有被改写的原文可以失真），需要的是另一件事：**不硬猜**。
+ * 语境支撑不了就返回 cannot_predict（中性拒绝），界面据此显示灰图标 + 提示，
+ * 而不是让模型随手编一句"继续"填进输入框。
+ *
+ * 分型与字数预算由 prediction.js 的确定性规则判定（零额外调用），本函数只负责：
+ * 一次调用 → 一次收紧重试 → 确定性校验/收尾 → 结果归一化。
+ * @param {{llm?: object, route?: object, kind: string, anchor?: string, choiceOptions?: string[],
+ *          turns?: {role: string, text: string}[], signal?: AbortSignal,
+ *          log?: (level: string, message: string, meta?: object) => void}} options 调用参数。
+ * @returns {Promise<object>} { ok: true, text, mode: 'predict', kind, tier, gate, detail }
+ *          或 { ok: false, code, error, mode: 'predict' }。
+ */
+export async function predictNextPrompt(options) {
+  const { llm, route, kind, anchor, choiceOptions, turns, signal, log } = options ?? {};
+  const predictKind = typeof kind === "string" && kind !== "" ? kind : "next-step";
+
+  if (llm === undefined || llm === null || typeof llm.stream !== "function") {
+    log?.("error", "[prompt-seed] llm service unavailable; prediction disabled");
+    return { ok: false, code: ERROR_CODES.LLM_UNAVAILABLE, error: ERROR_MESSAGES.llm_unavailable, mode: "predict", kind: predictKind };
+  }
+  if (route === undefined || route === null) {
+    log?.("error", "[prompt-seed] default model route unavailable; prediction disabled");
+    return { ok: false, code: ERROR_CODES.MODEL_UNAVAILABLE, error: ERROR_MESSAGES.model_unavailable, mode: "predict", kind: predictKind };
+  }
+
+  /**
+   * 中性拒绝：预测不出来时不产出任何文本（界面显示灰图标 + 提示）。
+   * @param {string} reason 拒绝原因（进日志，用于回答"为什么这次没预测"）。
+   * @returns {object} 归一化失败结果。
+   */
+  const refuse = (reason) => {
+    log?.("warn", "[prompt-seed] prediction refused; not guessing the next input", { kind: predictKind, reason });
+    return { ok: false, code: ERROR_CODES.CANNOT_PREDICT, error: ERROR_MESSAGES.cannot_predict, mode: "predict", kind: predictKind };
+  };
+
+  let latest = await callModel(llm, route, {
+    system: buildPredictSystemPrompt(predictKind),
+    user: renderPredictUserPrompt(predictKind, anchor, turns),
+    temperature: PREDICT_TEMPERATURE,
+    maxTokens: PREDICT_MAX_OUTPUT_TOKENS,
+    signal,
+    log,
+  });
+  if (!latest.ok) return { ...latest, mode: "predict", kind: predictKind };
+  if (latest.text === "") {
+    log?.("error", "[prompt-seed] prediction returned empty text");
+    return { ok: false, code: ERROR_CODES.EMPTY_RESULT, error: ERROR_MESSAGES.empty_result, mode: "predict", kind: predictKind };
+  }
+  if (latest.text.includes(PREDICT_FALLBACK_MARKER)) return refuse("model_fallback");
+
+  let check = checkPredictionOutput(latest.text, predictKind, choiceOptions);
+  if (!check.ok && check.reason === "overlong") {
+    // 收紧重试一次，温度归零：上一稿超长时，随机性只会让它更长。
+    log?.("warn", "[prompt-seed] prediction draft over budget; one tightened retry", {
+      kind: predictKind,
+      chars: latest.text.length,
+      budget: PREDICT_BUDGETS[predictKind] ?? null,
+    });
+    const retry = await callModel(llm, route, {
+      system: buildPredictSystemPrompt(predictKind, { tightened: true }),
+      user: renderPredictUserPrompt(predictKind, anchor, turns),
+      temperature: PREDICT_RETRY_TEMPERATURE,
+      maxTokens: PREDICT_MAX_OUTPUT_TOKENS,
+      signal,
+      log,
+    });
+    if (retry.ok && retry.text !== "" && !retry.text.includes(PREDICT_FALLBACK_MARKER)) {
+      latest = retry;
+      check = checkPredictionOutput(retry.text, predictKind, choiceOptions);
+    }
+  }
+
+  if (!check.ok && check.reason === "overlong") {
+    // 确定性收尾：切到预算内最后一个句读边界。宁可给一句稍短但完整的话，也不报一个
+    // 用户无法理解的"预测过长"——语言级拒绝只留给"推不出来"这一种情况。
+    const trimmed = trimPredictionToBudget(latest.text, predictKind);
+    const recheck = checkPredictionOutput(trimmed, predictKind, choiceOptions);
+    if (recheck.ok) {
+      log?.("warn", "[prompt-seed] prediction trimmed to its budget", {
+        kind: predictKind,
+        from: latest.text.length,
+        to: trimmed.length,
+      });
+      check = recheck;
+    }
+  }
+  if (!check.ok) return refuse(check.reason);
+
+  return {
+    ok: true,
+    text: check.text,
+    tier: "predict",
+    mode: "predict",
+    kind: predictKind,
+    // 预测没有被改写的原文，也就没有"保真"可言——如实返回 null，不借用一个
+    // 未运行过的闸门凭证（凭证必须可核对，这是本插件的既有约定）。
+    gate: null,
+    detail: "预测→" + (PREDICT_KIND_LABELS[predictKind] ?? predictKind),
+  };
+}
+

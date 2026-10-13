@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/Zian-anson/dsh-prompt-seed)](https://github.com/Zian-anson/dsh-prompt-seed/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-2ea44f.svg)](https://github.com/topics/dsh-plugin)
-[![tests: 186 passing](https://img.shields.io/badge/tests-186%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 200 passing](https://img.shields.io/badge/tests-238%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
 一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件。输入一行种子草稿，
 点 **✦**，草稿原地改写成一个 agent 真正能执行的具体 prompt——**把你没写出来的中间细节展开**，
@@ -55,13 +55,13 @@
 
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.5/dsh-prompt-seed-0.9.5.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.12.0/dsh-prompt-seed-0.12.0.tgz
 ```
 
 > **如果报 `ERR_PNPM_MISSING_TARBALL_INTEGRITY`**：先下载资产，再按本地路径安装——字节完全相同，本地路径不受该问题影响：
 >
 > ```sh
-> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.9.5/dsh-prompt-seed-0.9.5.tgz
+> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.12.0/dsh-prompt-seed-0.12.0.tgz
 > dsh plugin --profile <name> add ./dsh-prompt-seed-0.9.3.tgz
 > ```
 >
@@ -101,6 +101,35 @@ dsh --profile <name>
 | `改一下` | 刚把按钮改成红色 | 「先给我两三个候选颜色」量级的有度展开 |
 | `不对` | 方案不符合预期 | 指出错在哪、按原意重做，不引入新技术栈 |
 
+## 下一步输入预测（0.9.6）
+
+草稿为空、且会话里已经有来有回（用户说了、助手答了、当前没有在跑的回合）时，**✦** 的位置换成
+**水晶球**：点它读会话尾部，推断你接下来最可能发的那句话，直接填进输入框；一开始打字就交回星标。
+
+预测**按上下文分型**，不固定长度——能预测的东西本身随语境变。分型由确定性规则判定（零额外模型
+调用），每型有各自的字数预算：
+
+| 会话尾部的锚点 | 分型 | 预算 | 写出来的东西 |
+|---|---|---|---|
+| 助手给了编号选项 | choice | ≤ 20 字 | 复述最可能被选中的那一项 |
+| 助手停在提问上 | answer | ≤ 40 字 | 直接回答该问题 |
+| 助手问「要不要继续」 | continue | ≤ 20 字 | 确认，最多带一个短条件 |
+| 任务刚交付完（本轮有工具活动，或尾部有交付措辞） | next-step | ≤ 40 字 | 针对该工作的下一步动作 |
+| 刚发生了失败 | repair | ≤ 40 字 | 修复或重试 |
+| 以上都不是 | **cannot_predict（零模型调用）** | — | 什么都不写，图标转中性并给出说明 |
+
+硬保证在代码里，不指望提示词自觉：一句话、不得是清单；超预算 → 收紧重试一次 → 按句读边界确定性
+收尾；真故障在图标旁显示「预测失败，点击重试」，绝不静默。拒绝是中性态而不是红色故障——
+`cannot_predict` 与信号分支的 `cannot_infer` 同构：**推不出来就不说话，不硬猜一句"继续"**。
+
+空会话里什么都不显示（星标也去掉）；有了一段上下文，入口才出现。
+
+**预测的配置**（0.9.7 起）：预测读会话尾部，由独立的 `predict` 行配置键控制（默认开启，
+`predict: false` 关闭）；`context: false` 只关闭改写/审判的上下文注入，不再连带禁用预测。
+另新增 `requestTimeoutMs`（默认 120000）：单条请求的墙钟硬上限——provider 挂起时把
+「永久挂死」变成可重试的结构化错误（`request_timeout`），并向 `llm.stream` 透传中止信号。
+完整配置表见[英文 README](README.md#install)。
+
 ## 目录结构
 
 | 路径 | 职责 |
@@ -108,12 +137,13 @@ dsh --profile <name>
 | `src/prompt-templates.js` | 提示词契约资产、输出归一化、输入校验 |
 | `src/host-core.js` | 路由解析、`llm.stream` 消费、错误归一化、自适应契约与各分支路由 |
 | `src/signal-inference.js` | 信号分类、锚点推断、度校验（全确定性纯函数） |
-| `src/session-context.js` | 按需提取最近用户话轮 |
+| `src/session-context.js` | 按需提取最近用户话轮；预测窗口（助手取尾部 + 本轮工具活动） |
+| `src/prediction.js` | 预测分型判定与输出校验（全确定性纯函数） |
 | `src/sample-log.js` | 本地事件日志（samples.jsonl） |
 | `src/host-plugin.js` | Cordis 宿主插件 → `lib/index.js` |
 | `src/client-plugin.js` | 浏览器半区工厂 → 包成 `lib/client.js` |
 | `tools/build.mjs` | 构建脚本：复制宿主半区、包裹浏览器半区 |
-| `test/optimizer.test.mjs` | 186 项单元/契约/路由测试 |
+| `test/optimizer.test.mjs` | 238 项单元/契约/路由测试 |
 | `docs/FEATURES.md` | 逐项实测核对的功能清单 |
 
 `src/` 是经过测试的唯一事实源；`lib/` 是构建产物（**有意提交**，DSH 直接从 lib 加载，CI 有漂移守卫），不要手改。
@@ -121,7 +151,7 @@ dsh --profile <name>
 ## 开发
 
 ```sh
-npm test        # 先构建 lib/ 再跑 186 项测试
+npm test        # 先构建 lib/ 再跑 238 项测试
 npm run build   # tools/build.mjs → lib/
 ```
 

@@ -15,11 +15,13 @@ import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 
-import { ERROR_CODES, ERROR_MESSAGES, isPreciseInstruction, optimizePromptText, resolveRoute } from "./host-core.js";
+import { ERROR_CODES, ERROR_MESSAGES, isPreciseInstruction, optimizePromptText, predictNextPrompt, resolveRoute } from "./host-core.js";
+import { safeSlice } from "./message-text.js";
 import { setTemplateOverrides } from "./prompt-templates.js";
 import { appendSample, resolveSamplePath } from "./sample-log.js";
-import { extractRecentContext, needsContext } from "./session-context.js";
+import { extractPredictionWindow, extractRecentContext, needsContext } from "./session-context.js";
 import { classifySignalInput, extractAssistantTail } from "./signal-inference.js";
+import { classifyPredictionAnchor } from "./prediction.js";
 
 /** Cordis 插件名。 */
 export const name = "prompt-seed";
@@ -78,6 +80,19 @@ const REQUIRES_DSH = (() => {
 
 /** 请求体上限。输入本身已被 MAX_TEXT_LENGTH 限制，这里只是防滥用。 */
 const MAX_BODY_BYTES = 64 * 1024;
+
+/**
+ * 整条路由的墙钟硬上限（毫秒，T-debug-M4）。
+ *
+ * deadlineMs 只预算**可选**调用（第 3/4 次），这是 host-core 的既有设计；但它
+ * 管不到必发调用——provider 挂起时改写/审判两次调用会把请求无限期吊死，客户端
+ * fetch 跟着挂死（实测 deadlineMs=100 的请求跑了 6s，永不 finish 的流永不返回）。
+ * 这里给每条请求一个独立的天花板：到点即放弃等待并回结构化超时错误，同时把
+ * AbortSignal 透传给 llm.stream（callModel 本就支持），守规矩的 provider 会停烧
+ * token。默认 120s 刻意宽——实测最慢的合法拒绝 17.8s，它只负责把"挂死"变成
+ * "可重试的错误"，不参与正常延迟调节。`requestTimeoutMs` 行配置可调。
+ */
+const DEFAULT_REQUEST_TIMEOUT_MS = 120000;
 
 /** 事件落盘时保留的输入前缀长度：够分类，不整篇留存。 */
 const SAMPLE_INPUT_PREVIEW = 400;
@@ -308,6 +323,64 @@ function sendJson(res, status, payload) {
 }
 
 /**
+ * 每请求硬超时 + 客户端断开中止（T-debug-M4，见 DEFAULT_REQUEST_TIMEOUT_MS）。
+ *
+ * 三件事：
+ *   ① 把 AbortSignal 透传给任务（optimizePromptText / predictNextPrompt →
+ *      callModel → llm.stream），provider 侧能停则停；
+ *   ② 到点不再等任务醒来，直接以结构化超时结果 settle——客户端绝不无限期挂起；
+ *   ③ 客户端断开连接同样触发中止（改写结果没人等了，就不必烧完剩余调用）。
+ * 任务异常也归一为结构化错误：这条路由的约定是"业务结果一律 200 + code"，
+ * handler 不向 webServer 抛任何东西。
+ * @param {object} req 请求（用于监听客户端断开）。
+ * @param {number} timeoutMs 墙钟上限。
+ * @param {(signal: AbortSignal) => Promise<object>} task 业务任务。
+ * @returns {Promise<object>} 任务结果或结构化超时/错误结果。
+ */
+function runWithRequestTimeout(req, timeoutMs, task) {
+  return new Promise((resolve) => {
+    const controller = new AbortController();
+    let done = false;
+    const settle = (value) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      req.off("close", onClientGone);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      controller.abort();
+      settle({ ok: false, code: ERROR_CODES.REQUEST_TIMEOUT, error: ERROR_MESSAGES.request_timeout });
+    }, timeoutMs);
+    const onClientGone = () => controller.abort();
+    req.on("close", onClientGone);
+    Promise.resolve(task(controller.signal)).then(settle, (error) => {
+      settle({
+        ok: false,
+        code: ERROR_CODES.LLM_ERROR,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  });
+}
+
+/**
+ * 回环限定的排障开关：?debug=1 附带内部状态（不含上下文原文，只含形状），
+ * 用于诊断"上下文是否注入/路由是否覆盖生效"这类管线问题。predict 与 optimize
+ * 两条通道各查一次，此前各写一份（0.10.0 收拢）。
+ * @param {object} req 请求。
+ * @returns {boolean} 是否附带调试块。
+ */
+function wantsDebugFlag(req) {
+  if (typeof req.url !== "string") return false;
+  try {
+    return new URL(req.url, "http://localhost").searchParams.get("debug") === "1";
+  } catch {
+    return false;
+  }
+}
+
+/**
  * 装载 Host 半区：注册优化路由。
  * @param {object} ctx Cordis 上下文。
  * @param {{route?: string, provider?: string, model?: string, auditProvider?: string,
@@ -326,6 +399,27 @@ function sendJson(res, status, payload) {
 export function apply(ctx, config = {}) {
   const route = typeof config.route === "string" && config.route.startsWith("/") ? config.route : DEFAULT_ROUTE;
   const contextEnabled = config.context !== false;
+  // 预测通道独立开关（T-debug-F2）：`context` 管的是改写/审判的上下文注入，
+  // 预测的唯一依据就是会话读取——此前被同一个 contextEnabled 一并关掉，行配置
+  // `context: false` 时水晶球变成"永远 cannot_predict"的死按钮（客户端无从得知
+  // 该配置）。现在预测默认开启，`predict: false` 单独关闭。
+  const predictEnabled = config.predict !== false;
+  const requestTimeoutMs =
+    Number.isFinite(config.requestTimeoutMs) && config.requestTimeoutMs > 0
+      ? config.requestTimeoutMs
+      : DEFAULT_REQUEST_TIMEOUT_MS;
+  // 推理力度透传（0.10.1）：默认不透传（改写是轻任务，max 档实测让输出发散且慢
+  // 数秒）；`rewriteReasoningEffort: "inherit"` 让改写类调用跟随当前模型选择的
+  // reasoningEffort。只作用于生成型改写调用，不作用于审判与压缩（它们要快）。
+  const inheritReasoningEffort = config.rewriteReasoningEffort === "inherit";
+  // 管线选择（0.12.0）：unified = 改写+自审+修正在同一次调用（DRAFT→AUDIT→FINAL，
+  // 协议残缺自动降级 split 语义，质量下界即双调用）；split = 两次独立调用的旧路径。
+  // body.pipeline 允许逐请求覆盖（回环限定环境里的 A/B 与排障用，客户端不下发）。
+  const DEFAULT_PIPELINE = "unified";
+  const pipelineOf = (body) => {
+    const value = body !== null && typeof body === "object" ? body.pipeline : undefined;
+    return value === "split" || value === "unified" ? value : config.pipeline === "split" ? "split" : config.pipeline === "unified" ? "unified" : DEFAULT_PIPELINE;
+  };
   const samplePath = resolveSamplePath(config.samples);
   // 提示词模板覆盖（F 项）：默认开启，`templates: false` 关闭。
   const templatesEnabled = config.templates !== false;
@@ -399,6 +493,10 @@ export function apply(ctx, config = {}) {
     auditProvider: auditRoute?.provider ?? null,
     auditModel: auditRoute?.model ?? null,
     context: contextEnabled,
+    predict: predictEnabled,
+    requestTimeoutMs,
+    rewriteReasoningEffort: inheritReasoningEffort ? "inherit" : "none",
+    pipeline: config.pipeline === "split" ? "split" : config.pipeline === "unified" ? "unified" : DEFAULT_PIPELINE,
     samples: samplePath,
   });
 
@@ -447,6 +545,32 @@ export function apply(ctx, config = {}) {
   };
 
   /**
+   * 读取"预测下一步输入"所需的会话窗口（0.9.6）。
+   *
+   * 与 readContext 的关键差异：**无条件读取**。readContext 的按需注入判据建立在
+   * 用户草稿上（短草稿 / 指代词 / 纯信号），而预测通道的输入框是空的——没有草稿
+   * 可判，全部依据都在会话尾部，所以这里不做任何"省一次 readSurface"的取舍。
+   * 同样全防御：任何一步失败都返回 undefined，由调用方走中性拒绝，绝不抛。
+   * @param {unknown} sessionId 客户端报告的会话 id。
+   * @returns {Promise<{turns: {role: string, text: string}[], assistantTail?: string,
+   *                    sawToolActivity: boolean} | undefined>} 会话窗口。
+   */
+  const readPredictionWindow = async (sessionId) => {
+    if (!predictEnabled || typeof sessionId !== "string" || sessionId === "") return undefined;
+    try {
+      const sessionQuery = ctx.get("sessionQuery");
+      if (sessionQuery === undefined || typeof sessionQuery.readSurface !== "function") return undefined;
+      const surface = await sessionQuery.readSurface(sessionId);
+      return extractPredictionWindow(surface);
+    } catch (error) {
+      log("warn", "[prompt-seed] prediction context read failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return undefined;
+    }
+  };
+
+  /**
    * 读取提示词模板覆盖层（F 项）。
    *
    * 每次请求重读，不是启动时读一次——宿主模块代码要重启才能换，但数据不用。
@@ -454,6 +578,7 @@ export function apply(ctx, config = {}) {
    * **改完下一次点击就生效**，不必重启应用：
    *   system.md / user.md / audit.md —— 补全、精确、审判三份契约
    *   signal.md / deictic.md / conversational.md —— 0.9.x 三个分支的契约
+   *   predict.md —— 0.9.6 的下一步输入预测契约
    * 后三个键在 prompt-templates 里早就被读取，但这里从不加载它们，
    * 等于用户在 prompts/ 下放这三个文件完全无效——不可达的配置比没有更糟。
    * 缺失或空文件一律回落内置模板；`templates: false` 可整体关闭。
@@ -474,6 +599,7 @@ export function apply(ctx, config = {}) {
       ["signalSystem", "signal.md"],
       ["deicticSystem", "deictic.md"],
       ["conversationalSystem", "conversational.md"],
+      ["predictSystem", "predict.md"],
     ];
     for (const [key, file] of OVERRIDE_FILES) {
       try {
@@ -494,6 +620,218 @@ export function apply(ctx, config = {}) {
     return Object.keys(overrides).length > 0 ? overrides : null;
   };
 
+  // ---------------------------------------------------------------------------
+  // 三条通道（0.10.1 起从 handler 内联块拆出）：同一条路由按 body 形状分流，
+  // feedback 落盘即应答、predict / optimize 返回结果对象由 handler 统一写回。
+  // 拆分的动机是流式/调试扩展都要在通道内部动刀，内联块已经长到没法安全改。
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 反馈通道：body 带 feedback 字段。隐式信号（改写后"立刻撤销"= 补多了，
+   * "立刻再点一次"= 补少了）零打扰且是真实分布的唯一来源；不落盘就只能靠猜着调参。
+   * @param {object} body 已解析的请求体。
+   */
+  const handleFeedback = async (body) => {
+    const feedback = body.feedback;
+    if (samplePath === null) return;
+    await appendSample(samplePath, {
+      time: new Date().toISOString(),
+      event: "feedback",
+      // 与 optimize 记录同源的关联 id：57 条反馈此前只能靠时间戳相邻去猜
+      // 自己标的是哪一次输入，配上它就变成可精确 join 的监督信号。
+      runId: runIdOf(body),
+      codeVersion: codeVersion(),
+      kind: typeof feedback.kind === "string" ? feedback.kind : "unknown",
+      tier: typeof feedback.tier === "string" ? feedback.tier : null,
+      charsDelta: Number.isFinite(feedback.charsDelta) ? feedback.charsDelta : null,
+      elapsedMs: Number.isFinite(feedback.elapsedMs) ? feedback.elapsedMs : null,
+    });
+  };
+
+  /**
+   * 预测通道：body.mode === "predict"。输入框为空时点预测图标走这里：
+   * 没有草稿可依据，全部依据来自会话尾部。分型由确定性规则判定（零额外调用），
+   * 锚点不存在即中性拒绝——"拒绝硬猜"的不变量与信号分支同构。
+   * @param {object} req 请求（超时包装与 debug 判定用）。
+   * @param {object} body 已解析的请求体。
+   * @param {unknown} sessionId 会话 id。
+   * @returns {Promise<object>} 结果对象（可能带 _debug）。
+   */
+  const handlePredict = async (req, body, sessionId) => {
+    const predictionWindow = await readPredictionWindow(sessionId);
+    const anchor = classifyPredictionAnchor({
+      assistantTail: predictionWindow?.assistantTail,
+      sawToolActivity: predictionWindow?.sawToolActivity === true,
+    });
+    const callRoute = resolveCallRoute();
+    setTemplateOverrides(await readTemplateOverrides());
+    const startedAt = Date.now();
+    const result =
+      anchor.kind === "none"
+        ? {
+            ok: false,
+            code: ERROR_CODES.CANNOT_PREDICT,
+            error: ERROR_MESSAGES.cannot_predict,
+            mode: "predict",
+            kind: null,
+          }
+        : await runWithRequestTimeout(req, requestTimeoutMs, (signal) =>
+            predictNextPrompt({
+              llm: ctx.get("llm"),
+              route: callRoute,
+              kind: anchor.kind,
+              anchor: anchor.anchor,
+              choiceOptions: anchor.options,
+              turns: predictionWindow?.turns,
+              signal,
+              log,
+            }),
+          );
+    const elapsedMs = Date.now() - startedAt;
+
+    // 与 optimize 同一份事件日志：预测也需要一份真实分布才能判断"值不值得留"
+    // （拒绝率、分型分布、模型是否总在超预算）。anchor 只留 200 字前缀——
+    // 它和 optimize 的 input 预览处在同一个隐私平面（本机文件、同一目录）。
+    if (samplePath !== null) {
+      await appendSample(samplePath, {
+        time: new Date().toISOString(),
+        event: "predict",
+        code: result.ok ? "ok" : result.code,
+        mode: "predict",
+        kind: typeof result.kind === "string" ? result.kind : null,
+        anchorSource: anchor.kind === "none" ? null : anchor.source,
+        codeVersion: codeVersion(),
+        runId: runIdOf(body),
+        from: typeof sessionId === "string" && sessionId !== "" ? "ui" : "script",
+        turns: Array.isArray(predictionWindow?.turns) ? predictionWindow.turns.length : 0,
+        sawToolActivity: predictionWindow?.sawToolActivity === true,
+        inputChars: 0,
+        outputChars: result.ok ? result.text.length : 0,
+        ms: elapsedMs,
+        anchor: anchor.kind === "none" ? "" : safeSlice(String(anchor.anchor ?? ""), 0, 200),
+        provider: callRoute?.provider ?? null,
+        model: callRoute?.model ?? null,
+      });
+    }
+
+    if (wantsDebugFlag(req)) {
+      result._debug = {
+        codeVersion: codeVersion(),
+        sessionId: sessionId ?? null,
+        runId: runIdOf(body),
+        kind: typeof result.kind === "string" ? result.kind : anchor.kind ?? null,
+        anchorSource: anchor.kind === "none" ? anchor.reason : anchor.source,
+        turns: Array.isArray(predictionWindow?.turns) ? predictionWindow.turns.length : 0,
+        sawToolActivity: predictionWindow?.sawToolActivity === true,
+        provider: callRoute?.provider ?? null,
+        model: callRoute?.model ?? null,
+        samplePath,
+      };
+    }
+    return result;
+  };
+
+  /**
+   * 优化通道：默认路径。读会话上下文（按需）、跑改写管线、全量事件落盘。
+   * @param {object} req 请求（超时包装与 debug 判定用）。
+   * @param {object} body 已解析的请求体。
+   * @param {unknown} sessionId 会话 id。
+   * @param {string} text 用户草稿。
+   * @returns {Promise<object>} 结果对象（可能带 _debug）。
+   */
+  const handleOptimize = async (req, body, sessionId, text) => {
+    const contextBundle = await readContext(sessionId, text);
+    // 提到变量：0.9.0 把上下文改成 { context, assistantTail } 之后，
+    // ?debug=1 的统计块曾引用已不存在的 context——调试端点在 0.9.0 起每次调用
+    // 都抛 ReferenceError，直到 T013 的路由测试把它撞出来。
+    const context = contextBundle?.context;
+    const callRoute = resolveCallRoute();
+    setTemplateOverrides(await readTemplateOverrides());
+    const startedAt = Date.now();
+    const result = await runWithRequestTimeout(req, requestTimeoutMs, (signal) =>
+      optimizePromptText({
+        llm: ctx.get("llm"),
+        route: callRoute,
+        auditRoute,
+        text,
+        context,
+        assistantTail: contextBundle?.assistantTail,
+        depth: depthOf(body),
+        deadlineMs: config.deadlineMs,
+        pipeline: pipelineOf(body),
+        inheritReasoningEffort,
+        signal,
+        log,
+      }),
+    );
+    const elapsedMs = Date.now() - startedAt;
+
+    // 全量事件落盘：不只记拒绝。没有"每次优化长什么样"的分布，就无法判断
+    // 深度是否合适、哪类输入在哪个方向上出问题——样本是唯一证据来源。
+    // 只存输入前 400 字（够分类，不整篇留存），`samples: false` 可整体关闭。
+    if (samplePath !== null) {
+      await appendSample(samplePath, {
+        time: new Date().toISOString(),
+        event: "optimize",
+        code: result.ok ? "ok" : result.code,
+        tier: result.ok ? result.tier : null,
+        // 只登记管线**真实做出**的操作判定。结果对象在"还没走到选档就被拒"
+        // 的路径上根本没有 mode，这里如实写 null——早先的实现会退回启发式重猜
+        // （describeMode / isPreciseInstruction），于是 empty_input、hi、超长
+        // 输入、被拒草稿全被记成 "elaborate"：一个从未运行过的档位。
+        mode: typeof result.mode === "string" ? result.mode : null,
+        // 路由归因（0.10.1）：这条输入最终被哪条规则接管。mode 只说"走了哪个
+        // 管线"，classificationSource 说"是谁把它送进去的"（signal-multi /
+        // conversational-go-ahead / adaptive-clarify-forced…）——调阈值、补
+        // 规则、验证英文命中率都靠它做分母。
+        classificationSource: typeof result.classificationSource === "string" ? result.classificationSource : null,
+        // 归因字段：这份日志跨版本累积，没有它就只能靠时间戳考古。
+        codeVersion: codeVersion(),
+        runId: runIdOf(body),
+        // 调用来源：界面点击（带 sessionId）还是脚本直接打路由（不带）。
+        from: typeof sessionId === "string" && sessionId !== "" ? "ui" : "script",
+        depth: depthOf(body),
+        // 闸门凭证与越线类别落盘：延迟归因和"闸门是不是误判"都靠这两个字段回答。
+        gate: result.ok ? (result.gate?.verdict ?? null) : null,
+        repairs: result.ok ? (result.gate?.repairs ?? 0) : 1,
+        rechecked: result.ok ? (result.gate?.rechecked ?? false) : true,
+        // 拒绝路径没有 gate 对象，但它恰恰是最需要归因的一次。
+        violations: (Array.isArray(result.gate?.violations)
+          ? result.gate.violations
+          : Array.isArray(result.violations)
+            ? result.violations
+            : []
+        ).map((item) => item.kind),
+        inputChars: text.trim().length,
+        outputChars: result.ok ? result.text.length : 0,
+        ms: elapsedMs,
+        input: text.slice(0, SAMPLE_INPUT_PREVIEW),
+        added: Array.isArray(result.added) ? result.added : [],
+        provider: callRoute?.provider ?? null,
+        model: callRoute?.model ?? null,
+      });
+    }
+
+    // 回环限定的排障开关：?debug=1 附带内部状态（不含上下文原文，只含形状）。
+    if (wantsDebugFlag(req)) {
+      result._debug = {
+        codeVersion: codeVersion(),
+        sessionId: sessionId ?? null,
+        runId: runIdOf(body),
+        classificationSource: typeof result.classificationSource === "string" ? result.classificationSource : null,
+        contextMessages: Array.isArray(context) ? context.length : 0,
+        contextChars: Array.isArray(context) ? context.reduce((n, item) => n + (item?.text?.length ?? 0), 0) : 0,
+        provider: callRoute?.provider ?? null,
+        model: callRoute?.model ?? null,
+        auditProvider: auditRoute?.provider ?? null,
+        auditModel: auditRoute?.model ?? null,
+        deadlineMs: config.deadlineMs ?? null,
+        samplePath,
+      };
+    }
+    return result;
+  };
+
   // 注册必须挂到 fiber 生命周期（ctx.effect）：webServer.register 返回的 disposer
   // 若被丢弃，fiber 销毁后路由残留，disable→enable 的热升级会撞 duplicate exact route
   // （实测确认）。effect 的返回值就是 register 的 disposer，fiber 销毁时自动注销。
@@ -503,19 +841,17 @@ export function apply(ctx, config = {}) {
         kind: "exact",
         path: route,
         handler: async (req, res) => {
+          // 调度器只做四件事：回环/方法守卫、读体、按 body 形状分通道、写回结果。
+          // 通道实现见上方 handleFeedback / handlePredict / handleOptimize。
           if (!guardLoopback(req, res)) return;
           if (req.method !== "POST") {
             sendJson(res, 405, { ok: false, code: "method_not_allowed", error: "仅接受 POST" });
             return;
           }
 
-          let text = "";
-          let sessionId;
           let body;
           try {
             body = await readJsonBody(req, MAX_BODY_BYTES);
-            text = body && typeof body.text === "string" ? body.text : "";
-            sessionId = body && typeof body.sessionId === "string" ? body.sessionId : undefined;
           } catch (error) {
             // 请求体溢出走 413 + 专属错误码：它是传输层事实，不是业务结果，
             // 因此不适用"业务结果一律 200"的约定；把它并进 400 会让客户端无法区分
@@ -533,123 +869,19 @@ export function apply(ctx, config = {}) {
             return;
           }
 
-          // ---- 反馈通道（同一条路由，body 带 feedback 字段）----
-          // 隐式信号：改写后"立刻撤销"= 补多了，"立刻再点一次"= 补少了。这类标签
-          // 零打扰且是真实分布的唯一来源；不落盘就永远只能靠猜着调参。
-          const feedback =
-            body && typeof body.feedback === "object" && body.feedback !== null ? body.feedback : null;
-          if (feedback !== null) {
-            if (samplePath !== null) {
-              await appendSample(samplePath, {
-                time: new Date().toISOString(),
-                event: "feedback",
-                // 与 optimize 记录同源的关联 id：57 条反馈此前只能靠时间戳相邻去猜
-                // 自己标的是哪一次输入，配上它就变成可精确 join 的监督信号。
-                runId: runIdOf(body),
-                codeVersion: codeVersion(),
-                kind: typeof feedback.kind === "string" ? feedback.kind : "unknown",
-                tier: typeof feedback.tier === "string" ? feedback.tier : null,
-                charsDelta: Number.isFinite(feedback.charsDelta) ? feedback.charsDelta : null,
-                elapsedMs: Number.isFinite(feedback.elapsedMs) ? feedback.elapsedMs : null,
-              });
-            }
+          const text = body && typeof body.text === "string" ? body.text : "";
+          const sessionId = body && typeof body.sessionId === "string" ? body.sessionId : undefined;
+
+          if (body !== null && typeof body === "object" && typeof body.feedback === "object" && body.feedback !== null) {
+            await handleFeedback(body);
             sendJson(res, 200, { ok: true });
             return;
           }
-
-          const contextBundle = await readContext(sessionId, text);
-          // 提到变量：0.9.0 把上下文改成 { context, assistantTail } 之后，
-          // 下列调用改用了 contextBundle?.context，但 ?debug=1 的统计块仍在引用
-          // 已不存在的 context —— 调试端点在 0.9.0 起每次调用都抛 ReferenceError。
-          // 线上没有探针断言过它，直到 T013 的路由测试把它撞出来。
-          const context = contextBundle?.context;
-          const callRoute = resolveCallRoute();
-          setTemplateOverrides(await readTemplateOverrides());
-          const startedAt = Date.now();
-          const result = await optimizePromptText({
-            llm: ctx.get("llm"),
-            route: callRoute,
-            auditRoute,
-            text,
-            context,
-            assistantTail: contextBundle?.assistantTail,
-            depth: depthOf(body),
-            deadlineMs: config.deadlineMs,
-            log,
-          });
-          const elapsedMs = Date.now() - startedAt;
-
-          // 全量事件落盘：不只记拒绝。没有"每次优化长什么样"的分布，就无法判断
-          // 深度是否合适、哪类输入在哪个方向上出问题——样本是唯一证据来源。
-          // 只存输入前 400 字（够分类，不整篇留存），`samples: false` 可整体关闭。
-          if (samplePath !== null) {
-            await appendSample(samplePath, {
-              time: new Date().toISOString(),
-              event: "optimize",
-              code: result.ok ? "ok" : result.code,
-              tier: result.ok ? result.tier : null,
-              // 只登记管线**真实做出**的操作判定。结果对象在"还没走到选档就被拒"的
-              // 路径上根本没有 mode，这里如实写 null——早先的实现会退回启发式重猜
-              // （describeMode / isPreciseInstruction），于是 empty_input、hi、超长
-              // 输入、被拒草稿全被记成 "elaborate"：一个从未运行过的档位。而这份
-              // 日志的全部用途正是按档位归因，编造的标签污染的就是它本身。
-              // 想知道输入当时怎么被分类，看 code / violations，不要看这里。
-              mode: typeof result.mode === "string" ? result.mode : null,
-              // 归因字段：这份日志跨版本累积，没有它就只能靠时间戳考古——
-              // 实测为了判断"某次拒绝是否已被新版本修掉"，只能去比对提交时间。
-              codeVersion: codeVersion(),
-              runId: runIdOf(body),
-              // 调用来源：界面点击（带 sessionId）还是脚本直接打路由（不带）。
-              // 没有这个字段时，验证脚本的几百次探针会和真实使用混在一条日志里——
-              // 实测一次全量验证就写进 159 条固定输入，把"深度合不合适"这类
-              // 基于分布判断的问题彻底淹没。
-              from: typeof sessionId === "string" && sessionId !== "" ? "ui" : "script",
-              depth: depthOf(body),
-              // 闸门凭证与越线类别落盘：延迟归因（哪类越线走几次调用）和
-              // "闸门是不是误判"都只能靠这两个字段回答。
-              gate: result.ok ? (result.gate?.verdict ?? null) : null,
-              repairs: result.ok ? (result.gate?.repairs ?? 0) : 1,
-              rechecked: result.ok ? (result.gate?.rechecked ?? false) : true,
-              // 拒绝路径没有 gate 对象，但它恰恰是最需要归因的一次：早期实现只读
-              // result.gate，于是"被拒时到底撞了哪类越线"在日志里永远是空数组——
-              // 排查一次真实拒绝时，正是这个字段缺失让诊断多绕了一圈。
-              violations: (Array.isArray(result.gate?.violations)
-                ? result.gate.violations
-                : Array.isArray(result.violations)
-                  ? result.violations
-                  : []
-              ).map((item) => item.kind),
-              inputChars: text.trim().length,
-              outputChars: result.ok ? result.text.length : 0,
-              ms: elapsedMs,
-              input: text.slice(0, SAMPLE_INPUT_PREVIEW),
-              added: Array.isArray(result.added) ? result.added : [],
-              provider: callRoute?.provider ?? null,
-              model: callRoute?.model ?? null,
-            });
+          if (body !== null && typeof body === "object" && body.mode === "predict") {
+            sendJson(res, 200, await handlePredict(req, body, sessionId));
+            return;
           }
-
-          // 回环限定的排障开关：?debug=1 附带内部状态（不含上下文原文，只含形状），
-          // 用于诊断"上下文是否注入/路由是否覆盖生效"这类管线问题。
-          const wantsDebug =
-            typeof req.url === "string" && new URL(req.url, "http://localhost").searchParams.get("debug") === "1";
-          if (wantsDebug) {
-            result._debug = {
-              codeVersion: codeVersion(),
-              sessionId: sessionId ?? null,
-              runId: runIdOf(body),
-              contextMessages: Array.isArray(context) ? context.length : 0,
-              contextChars: Array.isArray(context) ? context.reduce((n, item) => n + (item?.text?.length ?? 0), 0) : 0,
-              provider: callRoute?.provider ?? null,
-              model: callRoute?.model ?? null,
-              auditProvider: auditRoute?.provider ?? null,
-              auditModel: auditRoute?.model ?? null,
-              deadlineMs: config.deadlineMs ?? null,
-              samplePath,
-            };
-          }
-
-          sendJson(res, 200, result);
+          sendJson(res, 200, await handleOptimize(req, body, sessionId, text));
         },
       }),
     "prompt-seed:route",
