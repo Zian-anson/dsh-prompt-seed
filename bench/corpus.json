@@ -1,0 +1,86 @@
+[
+  {
+    "id": "ack",
+    "text": "好了",
+    "expect": "passthrough",
+    "category": "passthrough"
+  },
+  {
+    "id": "frustrated-status",
+    "text": "好了，就是不知道效果怎么样（彻底的失败）",
+    "expect": "optimize",
+    "category": "chat"
+  },
+  {
+    "id": "release-question",
+    "text": "现在是不是该发布了？",
+    "expect": "optimize",
+    "category": "question"
+  },
+  {
+    "id": "feeling",
+    "text": "我觉得效果不好",
+    "expect": "optimize",
+    "category": "statement"
+  },
+  {
+    "id": "aside-question",
+    "text": "再检查一下，还有没有别的问题？（这次体验明显过慢）",
+    "expect": "optimize",
+    "category": "question"
+  },
+  {
+    "id": "seed-login",
+    "text": "帮我做个登录页",
+    "expect": "optimize",
+    "category": "task"
+  },
+  {
+    "id": "seed-noun",
+    "text": "登录",
+    "expect": "optimize",
+    "category": "task"
+  },
+  {
+    "id": "seed-debug",
+    "text": "我想要你帮我对这个项目的认知资产模块进行一个全面的Debug。",
+    "expect": "optimize",
+    "category": "task"
+  },
+  {
+    "id": "seed-debug-long",
+    "text": "我需要你帮我对这个项目的认知资产模块进行一个全面的Debug和优化。",
+    "expect": "optimize",
+    "category": "task"
+  },
+  {
+    "id": "meta-restart",
+    "text": "以后你每次修改自身插件后直接重启，不需要我再提醒。",
+    "expect": "optimize",
+    "category": "meta"
+  },
+  {
+    "id": "precise-delete",
+    "text": "删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏",
+    "expect": "optimize",
+    "category": "precise"
+  },
+  {
+    "id": "precise-edit",
+    "text": "把 src/a.js 的 formatDate 改成 dayjs",
+    "expect": "optimize",
+    "category": "precise"
+  },
+  {
+    "id": "english-seed",
+    "text": "make the dashboard faster",
+    "expect": "optimize",
+    "category": "task"
+  },
+  {
+    "id": "context-anaphora",
+    "text": "那把这个再改一下，保留刚才的接口。",
+    "expect": "optimize",
+    "category": "context"
+  }
+]

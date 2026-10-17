@@ -20,13 +20,16 @@ const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
 
 /** Host 半区逐文件复制：文件名映射到 lib/ 下的目标名。 */
 const HOST_COPIES = [
-  ["src/prompt-templates.js", "lib/prompt-templates.js"],
-  ["src/host-core.js", "lib/host-core.js"],
+  ["src/errors.js", "lib/errors.js"],
+  ["src/classify.js", "lib/classify.js"],
+  ["src/prompts.js", "lib/prompts.js"],
+  ["src/validate.js", "lib/validate.js"],
+  ["src/context.js", "lib/context.js"],
+  ["src/optimize.js", "lib/optimize.js"],
+  ["src/jobs.js", "lib/jobs.js"],
+  ["src/predict.js", "lib/predict.js"],
   ["src/message-text.js", "lib/message-text.js"],
-  ["src/session-context.js", "lib/session-context.js"],
   ["src/sample-log.js", "lib/sample-log.js"],
-  ["src/signal-inference.js", "lib/signal-inference.js"],
-  ["src/prediction.js", "lib/prediction.js"],
   ["src/host-plugin.js", "lib/index.js"],
 ];
 
@@ -91,7 +94,7 @@ async function main() {
   await writeFile(join(root, "lib/client.js"), clientBundle, "utf8");
 
   process.stdout.write(
-    `built lib/index.js, lib/host-core.js, lib/prompt-templates.js, lib/client.js (${clientBundle.length} bytes) for ${pkg.name}\n`,
+    `built lib/index.js + 8 host modules + lib/client.js (${clientBundle.length} bytes) for ${pkg.name}\n`,
   );
 }
 

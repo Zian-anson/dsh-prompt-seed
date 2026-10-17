@@ -5,484 +5,147 @@
 [![CI](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml/badge.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Zian-anson/dsh-prompt-seed)](https://github.com/Zian-anson/dsh-prompt-seed/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-2ea44f.svg)](https://github.com/topics/dsh-plugin)
-[![tests: 200 passing](https://img.shields.io/badge/tests-238%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 15 passing](https://img.shields.io/badge/tests-15%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
-A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin. Type a rough
-draft, click **✦**, and it is rewritten in place — **the plugin picks the operation**: a true
-seed is **unfolded** into a prompt an agent can act on, a complete-but-messy draft is
-**clarified** at about the same length, an already-precise instruction passes through
-near-verbatim. A semantic fidelity gate makes sure the meaning survives every path. Click **↺**
-to get your original back.
+A DeepSeek Harness composer plugin. Type a rough draft, click **✦**, and it is rewritten in place.
 
-```
-make an image compression feature
-        │  click ✦
-        ▼
-Make an image compression feature: accept jpg, png and webp uploads; let me set
-a quality level or a target size; show a before/after comparison of file size and
-sharpness; compress several images in one batch and download them as one archive.
-Keep the page responsive on large images, keep transparent pngs transparent, say
-so when a format is unsupported, and keep the original when a compression fails.
-        │  written in place
-        │  (credential: fidelity ✓ · +178 chars · filled in: formats, quality, edge cases)
-        ▼
-↺ original · ✦ regenerate
-        │  after generating another version
-        ▼
-↺ original · ✦ regenerate · ‹ previous version
-```
+**0.19.1 is a minimal optimizer.** Every non-passthrough input gets exactly one model call and
+one contract: rewrite the draft into a clearer version of the same message. Do not answer it, do
+not execute it, do not add requirements. Preserve intent, speech act, language, uncertainty and
+explicit paths/identifiers. There are no routes, shapes, ambiguity scores, target ratios, repair
+calls, or semantic validation gates.
 
-## Why this one
+The only guards are: empty/model error returns the original; a lost explicit path/file/URL/
+identifier returns the original. Everything else is left to the model and to undo.
 
-The "rewrite my draft" slot in the DSH ecosystem is crowded — there are 26+ plugins in it. Most of
-them **polish**: strip filler, tighten wording, cap the length, and refuse to add anything the user
-did not write. This plugin does the opposite thing on purpose: a one-line seed is usually an
-*insufficient* prompt, and the value is in the detail the user could not write.
+First-optimize session creation is unchanged: in a blank new conversation the first optimize
+creates a real Session, generates its title, opens it with the draft, and binds the job to that
+sessionId. No message is sent. maxTokens is not set; a 15s idle watchdog and a 20s host budget
+remain.
 
-| | typical prompt-optimizer plugin | dsh-prompt-seed |
-|---|---|---|
-| vague one-liner | returned nearly unchanged, or padded with `(TBD: …)` placeholders | **unfolded into a concrete, executable request** (measured 10–25×) |
-| already-precise instruction | reworded, sometimes with extra procedure appended | **left essentially as-is** (measured 1.0–1.1×), via a separate precise-input contract |
-| fidelity check | deterministic string check: did every path / identifier / number survive? | **semantic audit with binding force**: a self-audit section in the same call (DRAFT committed first, FINAL must fix every self-reported violation, the deliverable still passes all deterministic checks; a sham fix is rejected) — plus an independent audit call for precise inputs that drifted |
-| on a violation | accept, or reject outright | **targeted repair by violation class**, re-audited; only reject if it still distorts |
-| what you see | a length ratio | **a gate credential**: fidelity ✓ · +150 chars · filled in: edge cases, failure handling |
-| not happy with the result | revert and click again | **✦ regenerate** (keeps up to 3 versions) and **‹ step back** |
-| complete but tangled draft | reworded, sometimes padded | **clarified at about the same length** — same intent, references resolved, nothing added (hard 1.5x cap) |
+## What it does
 
-`PADDED` (padding a request that was already complete) and `TONE_SHIFTED` (a request rewritten into
-a different register) have no counterpart in any of the plugins surveyed — a string-equality check
-cannot catch "nothing was lost, but the meaning changed".
-
-Being explicit about the trade-off: this plugin **adds detail the user did not write**. That is the
-product, and it is also the risk. The gate exists to make it safe — anything that changes what was
-asked for, narrows it, contradicts it, or pads it is caught and repaired. If you want a plugin that
-never adds anything, one of the conservative ones will suit you better.
-
-## Compatibility
-
-| | |
+| Draft | Result |
 |---|---|
-| Host | `dsh >=0.2.0-rc.1 <0.3.0-0` (declared as `engines.dsh`); tested on `0.2.0-rc.2` |
-| Node | `>=22.19` (matches the host's own requirement) |
-| Runtime dependencies | **none** — the package ships six host modules plus the entry and one browser bundle, no build toolchain needed to install |
+| 帮我做个登录页 | a more executable version of the same request |
+| 现在是不是该发布了？ | the same question, clarified |
+| 我觉得效果不好 | the same complaint, with object/criterion made explicit |
+| 好了 | no model call; neutral "nothing to optimize" |
+| 删除 src/a.js 的 export，跑测试 | near-verbatim; src/a.js must survive |
+| (empty input, conversation context) | crystal-ball prediction |
 
-DSH is in developer preview and its README warns of breaking changes, so this plugin declares a
-range and **disables itself instead of breaking the host's boot** when a seam is missing: if the
-`webServer` or `slots` service is absent, it logs one readable line naming the missing seam and the
-host version it wants, then stays out of the way. Host boot is all-or-nothing — one plugin that
-throws stops the whole process — so self-disabling is the only acceptable failure mode here.
+There is no route table. If input is not empty/greeting, it is optimized once.
 
-During `0.x`, **minor version bumps may contain breaking changes** (SemVer §4); patch bumps will not.
+## Sessions, switching, and recovery
+
+Optimization is a **host-owned job**, not a component-local fetch.
+
+- Switch to another conversation while a job runs: the local stream detaches, the host job
+  continues. Switching never cancels.
+- Return: the button restores running progress or the finished result. If the draft is unchanged,
+  the result is applied; if you edited it, the result stays ready and the button says "result
+  ready — click to retrieve". A changed draft is never overwritten.
+- New conversation with no sessionId yet: the client uses a draft conversationKey and binds it to
+  the sessionId when the first message creates one. Only one unbound new-chat job is allowed at a
+  time.
+- Explicit cancel is the only cancel. Refresh/pages hidden/conversation switch do not cancel.
+- A job running in another conversation produces **no counter or badge** in the current composer.
+- Jobs are in-memory with a 10-minute TTL. Host restart loses jobs cleanly (idle, no stale
+  spinner); page refresh against the same host restores them.
+- API actions: optimize / status / bind / cancel / consume. There is no list-all-tasks endpoint.
 
 ## Install
 
-Install the released tarball (works today, pinned by version):
-
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.12.0/dsh-prompt-seed-0.12.0.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.19.1/dsh-prompt-seed-0.19.1.tgz
 ```
 
-> **If that fails with `ERR_PNPM_MISSING_TARBALL_INTEGRITY`**, download the asset and add the file
-> instead — the tarball is the same bytes, and a local path always resolves cleanly:
->
-> ```sh
-> curl -LO https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.12.0/dsh-prompt-seed-0.12.0.tgz
-> dsh plugin --profile <name> add ./dsh-prompt-seed-0.9.3.tgz
-> ```
->
-> The cause is upstream, not in this package: pnpm writes a lockfile entry for an `https`
-> tarball without an `integrity` field and then rejects its own entry on the verification pass.
-> The release asset itself is verified byte-for-byte against the repository by
-> `node tools/verify-release.mjs v0.9.5`.
-
-The npm channel lights up once the package is published there:
+Or use the local tarball while developing:
 
 ```sh
-dsh plugin --profile <name> add dsh-prompt-seed   # npm, pending publication
+dsh plugin --profile <name> add ./dsh-prompt-seed-0.19.1.tgz
 ```
 
-Verify the bundle and row landed before booting:
+The button appears in the composer tool row. Remove it with
+`dsh plugin --profile <name> remove dsh-prompt-seed`.
 
-```sh
-dsh --profile <name> --dump-config     # must show "# == dsh-prompt-seed"
-dsh --profile <name>
-```
-
-The ✦ button appears in the composer tool row, immediately left of the model selector. Remove it
-with `dsh plugin --profile <name> remove dsh-prompt-seed`.
-
-## Quick start
-
-1. Type a rough draft — one line is fine, typos are fine.
-2. Click **✦** and wait 1–6 s. The draft is replaced in place; nothing pops up.
-3. Hover the **↺** button to read the credential: gate verdict, size change, and what was filled in.
-4. Not quite right? **✦** next to it generates another version; **‹** steps back to the previous one.
-5. **↺** restores your original. Editing the draft yourself also clears the undo — the plugin never
-   overwrites what you have since typed.
-
-## Signals and short directives (0.9.0)
-
-Two input shapes that the elaboration contract was never designed for get dedicated semantics:
-
-**A bare signal** — a number like 42, or a go-ahead like "continue" or "ok" — carries no task content. Its only
-meaning is: continue with what the conversation left pending. So it is resolved against an anchor
-(the latest assistant turn plus the latest user turn) in a fixed priority order, and **refused
-honestly when nothing matches**:
-
-| Anchor found in context | Inference | Example |
-|---|---|---|
-| an option list the number matches | **choice** | 1 + "Continue? 1. keep organizing 2. stop for now" → keep organizing |
-| a question the assistant left pending | **answer** | 15 + "When does it ship this month?" → ships on the 15th |
-| the user's own unanswered question / a continuation offer | **continue** | "continue" → proceed with the offered action |
-| nothing matches | **cannot_infer, zero model calls** | 42 against options 1/2 is a deterministic refusal — never a guess |
-
-**A short directive** — "fix it" / "wrong" / "change it" — has a clear verb and a missing object. Expansion
-runs inside a **degree contract**: the referent must come from context; divergence is allowed only
-inside the natural sub-parts of the user's own verb and its implied follow-ups; new goals, tools,
-numbers, or scope are forbidden; the verb must survive verbatim; the output is hard-capped at 180
-characters, with one tightened retry before rejection. An unresolvable referent is reported, not
-invented (an unresolvable referent maps to cannot_infer).
-
-Measured against the live model: a short directive in a button-color context expands to a single
-sentence under 40 characters with the user's verb preserved and nothing invented, while a mismatched
-number refuses in 0 model calls.
-
-## Next-input prediction (0.9.6)
-
-When the draft is empty and the conversation has had at least one full exchange, the **✦** slot becomes
-a **crystal ball**: click it and the plugin reads the tail of the conversation, works out the message
-you are most likely to send next, and drops that sentence into the message box. Nothing else changes —
-type anything and the star comes back.
-
-The prediction is **shaped by what the context can support**, not by a fixed length. The anchor type is
-decided by deterministic rules (zero extra model calls) and each type carries its own character budget:
-
-| Anchor in the conversation tail | Type | Budget | What gets written |
-|---|---|---|---|
-| the assistant offered numbered options | choice | ≤ 20 chars | restates the option you are most likely to pick |
-| the assistant asked a question | answer | ≤ 40 chars | answers it |
-| the assistant asked whether to continue | continue | ≤ 20 chars | confirms it, with at most one short condition |
-| work was just delivered (tool activity, or delivery wording) | next-step | ≤ 40 chars | one concrete next action on that work |
-| something just failed | repair | ≤ 40 chars | one concrete fix or retry |
-| none of the above | **cannot_predict, zero model calls** | — | nothing is written; the icon goes neutral and says so |
-
-Rules enforced in code rather than trusted to the prompt: one message, never a list; over budget → one
-tightened retry → deterministic trim at the last sentence boundary; a genuine failure is reported next
-to the icon ("prediction failed, click to retry") instead of failing silently. Refusals stay neutral,
-not red — `cannot_predict` is the system declining to guess, exactly like `cannot_infer` for bare
-signals.
-
-An empty session shows nothing at all: no star, no crystal ball. The entry appears once there is a
-conversation to predict from.
-
-## How it works
-
-Two halves, one package:
-
-```
-┌─ Browser ────────────────────────────────────────────────┐
-│ lib/client.js   __ModuleLoader__ bundle                  │
-│   slots.register('conversation.input.right', …)          │
-│   5 states: ✦ idle / ⟳ busy / ↺ revert / 🛡 declined / ⚠ error         │
-│   undo backup + draftRev CAS + divergence detection      │
-└──────────────────────┬───────────────────────────────────┘
-                       │  POST /api/prompt-seed/optimize  { text }
-┌──────────────────────▼───────────────────────────────────┐
-│ lib/index.js    Cordis plugin (host)                     │
-│   ctx.webServer.register({ kind: 'exact', path, handler })│
-│   loopback-only (peer addr + Host shape + Origin)        │
-│                                                          │
-│   CONTRACT: adaptive — one call, three operations         │
-│   ① rewrite call      ctx.get('llm').stream(...)         │
-│        │  model declares MODE first, then does it:       │
-│        │    seed    → unfold the implied detail          │
-│        │    clarify → same meaning, tidied, ≤1.5x cap    │
-│        │    precise → near-verbatim pass-through         │
-│   ② budget gates      deterministic, not model judgement: │
-│        │  clarify >1.5x → one clarify-only retry →       │
-│        │  still over → rejected; anchors lost → rejected │
-│        │  seed + unchanged → retry at temp .4/.7         │
-│   ③ distortion audit  2nd cheap call, semantic rule:      │
-│        │                OK | DISTORTED | SCOPE_ADDED |    │
-│        │                CONTRADICTED | TONE_SHIFTED | THIN│
-│        ├─ OK, not THIN            → accept (tier full)   │
-│        ├─ THIN + seed input       → ④ elaborate once →   │
-│        │                            re-audit → tier       │
-│        │                            elaborated | thin     │
-│        ├─ unparsable / call failed → accept (fail-open)  │
-│        └─ distortion → ④ targeted repair (keep the added  │
-│              │            detail, drop only the violation)│
-│              └─ ⑤ re-audit → tier repaired | rejected     │
-└──────────────────────┬───────────────────────────────────┘
-                       ▼
-                 current default model
-```
-
-`tier` in the response body says where the accepted text came from: `full` (first draft
-passed), `elaborated` (too thin → elaborated once), `repaired` (distorted → repaired),
-`thin` (elaboration introduced distortion, so the thin but faithful draft was kept).
-
-The browser half talks to the host half over one loopback-only HTTP route rather than a
-generated Remote service: the payload is a single request/response pair, and a route avoids
-binding this package's build to Typert's schema code generation.
-
-| Service | Used by | If missing |
-|---|---|---|
-| `webServer` | host half (`inject`) | plugin does not load — a hard dependency |
-| `llm` | host half (optional read) | `llm_unavailable` |
-| `agentDefaultModel` | host half (optional read) | `model_unavailable` |
-| `slots` | browser half (`inject`) | button does not mount |
-
-## Configuration
-
-The row accepts a few optional keys; defaults are correct for almost everyone.
+## Config
 
 ```yaml
-- insert:
-    - id: prompt-seed
-      name: dsh-prompt-seed
-      config:
-        route: /api/prompt-seed/optimize   # route path (this is the default)
-        # provider: zai-coding-cn               # pin the model route (provider + model
-        # model: glm-5.2                        #   work as a pair; defaults to agentDefaultModel)
-        # auditProvider: zai-coding-cn          # route the two audit calls to a cheaper
-        # auditModel: glm-5.3-flash             #   model (provider + model, likewise a pair)
-        # deadlineMs: 20000                     # wall-clock budget for the optional calls
-        # context: false                        # disable session-context injection (on by default)
-        # predict: false                        # disable next-input prediction (on by default)
-        # requestTimeoutMs: 120000              # hard per-request wall-clock ceiling
-        # rewriteReasoningEffort: inherit       # forward the picker's reasoning effort to
-        #                                        #   generative rewrite calls (default: never)
+config:
+  route: /api/prompt-seed/optimize
+  provider: opencode-go        # optional; omit to follow the host picker
+  model: deepseek-v4.1-flash
+  requestTimeoutMs: 20000
+  context: true
+  samples: ~/.dsh/prompt-seed/samples.jsonl
+  templates: true
 ```
 
-Changing `route` requires editing `src/client-plugin.js`'s `ROUTE` and rebuilding — the browser
-half is a compiled bundle, so the two must be changed together. A test asserts they match.
+Removed in 0.19.1: `pipeline`, `depth`, `auditProvider`, `auditModel`, `deadlineMs`,
+`rewriteReasoningEffort`, `predict`, `tasks`. Those features were either latency multipliers
+or unverifiable; they are recoverable from the v0.14.4 tag.
 
-| Key | Default | Meaning |
-|---|---|---|
-| `route` | `/api/prompt-seed/optimize` | route path; changing it requires editing `ROUTE` in `src/client-plugin.js` and rebuilding |
-| `provider` + `model` | host default | pin the rewrite/audit model (both keys together). Leave unset to **follow the host model picker**: the route re-reads `agentDefaultModel.currentSelection()` on every click, so switching models in the GUI switches this plugin on the next click. (A per-session `modelSelection` projection exists in the host but exposes no public read seam yet; when it does, following the conversation's own model is a drop-in change here.) |
-| `pipeline` | `unified` | `unified` rewrites, self-audits and corrects **in one model call** (DRAFT→AUDIT→FINAL protocol; malformed outputs degrade to the split path, so split is the quality floor). `split` restores the classic two-call rewrite + independent audit. Precise inputs that drifted are still sent to the independent audit even in unified mode. Measured (glm-5.2, 8-case corpus, two runs): −11~18% average latency, seed cases −35~79%, cross-audit clean rate 8/8 vs 7/8 in favor of unified. |
-| `rewriteReasoningEffort` | *(off)* | set to `inherit` to forward the current selection's `reasoningEffort` (e.g. `high`) to **generative** rewrite calls — first draft, clarify retry, unfold retry, thin elaboration, repair. Audits and seed-compression never inherit: their job is fast and stable, not deep. Default never forwards (measured: max-effort deep reasoning made rewrite outputs diverge and added seconds). |
-| `auditProvider` + `auditModel` | same as above | route **the audit judge** to a different model (both keys together). The worst-case path makes four calls; the two audits are the lightest, so moving them to a faster/cheaper model is the most direct lever on how long a rejection takes. Leave unset to keep one model for everything. |
-| `deadlineMs` | `20000` | wall-clock budget for the **optional** calls (unfold retry, thin-elaboration, targeted repair). Past it the run skips what is left and returns the same honest result a failed repair would have produced. The default sits above every latency measured in real use, so it does not trade repair attempts for speed — it bounds a provider that hangs. Lower it to trade attempts for time. |
-| `context` | `true` | session-context injection; now read **on demand** (short draft or anaphora only). Does **not** govern prediction — that is `predict`. |
-| `predict` | `true` | next-input prediction (the crystal ball). Its only input is the session tail, so it reads the session independently of `context`; set `predict: false` to turn the feature (and its session reads) off. |
-| `requestTimeoutMs` | `120000` | hard wall-clock ceiling for one route request (rewrite and predict alike). `deadlineMs` deliberately budgets only the optional calls; a provider that hangs on a mandatory call is cut off here with a structured `request_timeout` result, and an AbortSignal is forwarded into `llm.stream`. The default sits far above every legitimate latency — it converts "hangs forever" into "retryable error", nothing else. |
-| `samples` | `$DSH_HOME/prompt-seed/samples.jsonl` | event log path; `false` disables logging entirely |
-| `templates` | `true` | allow `$DSH_HOME/prompt-seed/prompts/*.md` to override the built-in prompts |
+Prompt overrides live in `$DSH_HOME/prompt-seed/prompts/{optimize}.md`.
 
-**Depth** is a client-side setting (right-click the ✦ button): `auto` (from local feedback counts),
-`light`, `standard`, `deep`. It shapes how much a **seed** is unfolded — clarify and precise
-ignore it. It is not a row config key because it is per-user, not per-profile.
+## HTTP API
 
-**Prompt overrides**: drop `system.md`, `user.md`, `audit.md`, `signal.md`, `deictic.md` or
-`conversational.md` into
-`$DSH_HOME/prompt-seed/prompts/` to replace the built-in contract. They are re-read **on every
-request**, so an edit takes effect on the next click — no app restart.
+`POST /api/prompt-seed/optimize`
 
-**Context injection** sends the session's **two most recent user turns** (each truncated to
-300 characters) to the rewrite and audit prompts as a reference-resolution-only block. The
-last assistant turn is read only to anchor bare-signal inference ("42" → which option?) and is
-never sent to the rewrite or audit prompts.
-It fails open at every step — no session id, no `sessionQuery` service, corrupt reads, or
-`context: false` all degrade silently to context-free optimization.
+Request:
 
-**Model routing**: rewriting rewards instruction-following over raw generation, but the
-floor is higher than "any flash will do". Measured across providers (v0.4.6): glm-5.2
-passes every case class cleanly — including the two gray zones where both flash-tier
-models fail (procedural insertions into already-precise requests, and conversation
-narration leaking into reference resolution). Flash models are fine for the simple
-classes and cheaper, but the retry chain they trigger erases the latency win. The
-tested-good route is one config line:
-`provider: zai-coding-cn, model: glm-5.2`.
+```json
+{ "action": "optimize", "text": "...", "sessionId": "...", "conversationKey": "draft:...", "stream": true }
+```
 
-## Error codes
+Actions: `optimize`, `status`, `bind`, `cancel`, `consume`. `status` returns the current
+conversation's job (`{ok, job}`), `bind` attaches an unbound draft job to a sessionId, and
+`cancel` is explicit only. Jobs are keyed by sessionId and/or a draft conversationKey; there
+is no list-all-tasks endpoint.
 
-The route answers `200` for **business** outcomes and puts the outcome in the body. Transport-level
-failures are the exception and carry their own status: `forbidden` is 403, `method_not_allowed` is
-405, an unparseable body is 400, and an oversized body is 413.
+`stream:true` returns NDJSON:
 
-| `code` | Cause | User-facing message (the UI ships Chinese strings today; English meaning below) |
-|---|---|---|
-| `empty_input` | draft is blank | Type something first. |
-| `input_too_long` | over 8000 characters | Too long — trim it and try again (a neutral hint, not a failure). |
-| `llm_unavailable` | `llm` service not mounted | Model service unavailable. |
-| `model_unavailable` | no default model | No usable default model. |
-| `llm_error` | call threw, or `finish` was `error`/`aborted` | Model call failed. |
-| `empty_result` | empty after normalization | The model returned nothing usable. |
-| `truncated` | `finish.kind === 'max-tokens'` | Result was truncated — shorten the input and retry. |
-| `nothing_to_optimize` | input is a bare greeting / punctuation only | Too short — nothing to optimize (a neutral hint, not a failure). |
-| `cannot_infer` | a bare signal with no anchor in the conversation | Cannot tell what this refers to — write out what you mean (zero model calls; a neutral refusal, never a guess). |
-| `cannot_predict` | the "predict next input" click, when the conversation tail holds no anchor (no options, no question, no offer, no failure, no delivered work) | There is no predictable next step in this context (zero model calls; a neutral refusal, never a guess). |
-| `fidelity_rejected` | rewrite and targeted repair both distort the request | The rewrite would change your meaning; your text was kept (the tooltip appends the `added` list: what the audit flagged). |
-| `payload_too_large` | request body over 64 KB | Too large — trim it and try again (HTTP 413). |
-| `forbidden` | non-loopback peer, `Host` or `Origin` | — (403) |
+```text
+{"type":"meta","route":"optimize","reasons":[],"promptVersion":"0.19.1"}
+{"type":"delta","text":"..."}
+{"type":"final","ok":true,"text":"...","route":"optimize","changed":true,"calls":1,"ttftMs":900,"ms":2600}
+```
 
-## Privacy and data flow
+Without `stream`, the same final is returned as one JSON object. `?debug=1` adds a `_debug`
+block to the JSON final. The route is loopback-only and requires `application/json`.
 
-The plugin holds **no API key** and stores no credentials: it calls the host's own `llm` service, so
-model access and credential handling stay exactly where they already are.
+Failure is explicit: `empty_result`, `truncated`, `validation_failed` (with a reason and the
+rejected draft), `request_timeout`, or `nothing_to_optimize`. The original draft is never
+silently replaced on failure.
 
-- **The only outbound request is the model call the host would make anyway.** No telemetry, no
-  update check, no third-party endpoint.
-- **One local HTTP route** (`POST /api/prompt-seed/optimize`), reachable only from loopback. The
-  handler verifies three things, because each one alone is bypassable: the peer socket address
-  (an arbitrary web page runs on this machine too), the `Host` header matched by **full shape**
-  (a domain pointing at `127.0.0.1` otherwise passes both the peer check and any prefix test), and
-  the `Origin` header, which is the only one that separates *this app's page* from *some other
-  page*. A request with no `Origin` at all — a script, `curl` — is allowed, since the peer check
-  already covers it.
-- **Session context is read on demand**, not always: only when the draft is short (≤12 chars) or
-  contains an anaphor, and never for a precise instruction that already names its files. It is used
-  to resolve references, never as content to rewrite.
-- **The local event log** (`$DSH_HOME/prompt-seed/samples.jsonl`) records the outcome of each run —
-  code, tier, mode, depth, gate verdict, violation classes, character counts, latency, the
-  `codeVersion` that produced the row, and a per-run `runId` that pairs it with the implicit
-  feedback for the same run — plus the **first 400 characters** of the input, so that "is the depth
-  right / is the gate misfiring" can be answered with data instead of opinion. Set `samples: false`
-  in the row config to disable it entirely.
-- **Implicit feedback** is four local counters (`applied` / `reverted` / `retried` / `submitted`)
-  kept in `localStorage`; they tune the depth setting on your machine and are never uploaded.
-
-## Troubleshooting
-
-| Symptom | Cause | Fix |
-|---|---|---|
-| No ✦ button | host older than `0.2.0-rc.1`, or the `slots` service is missing | open the browser console — the plugin logs which seam is missing and the version it wants |
-| Click does nothing | the route is not registered | check the host log for the `[prompt-seed] loaded` banner; confirm `--dump-config` shows the row |
-| "Model service unavailable" / "No usable default model" | host `llm` or `agentDefaultModel` not mounted | configure a session model, or set `provider` + `model` in the row config |
-| Result is longer/shorter than you want | depth setting | **right-click the ✦ button** to cycle `auto / light / standard / deep`; the choice is remembered |
-| **Everything 403s after you moved to a tunnel / reverse proxy** | the route checks `Origin` as well as the peer address and `Host` (0.9.5). A proxy that rewrites `Host` — port forwarding, tunnels — while the browser keeps the original origin no longer looks same-machine. This is not DNS rebinding: that case is rejected for a different reason and always was | reach the app on its own loopback URL (the address `dsh web` prints). The 403 body names which check failed; the host log prints peer / `Host` / `Origin` verbatim |
-| The rewrite was not applied (shield 🛡) | the fidelity gate judged the rewrite would change your meaning — nothing is written back, your text is untouched | hover the shield — the tooltip names the violation class; the eye button lets you view the rejected draft anyway |
-| Output keeps getting rejected | the model is weak at instruction-following | point the row at a stronger model (`provider` + `model`) |
-| You edited the prompts but nothing changed | override files must be at `$DSH_HOME/prompt-seed/prompts/` — `system.md`, `user.md`, `audit.md` for the three main contracts, `signal.md`, `deictic.md`, `conversational.md` for the 0.9.x branches | files are re-read on every request, so a correct path takes effect on the next click |
-| **You upgraded the plugin but behaviour is unchanged** | the host half is an ES module, and **Node's module cache is keyed by URL** — reinstalling the same package name lands on the same path, so the running process keeps executing the module it already loaded | **restart the app.** Then confirm with `curl -s -X POST 'http://127.0.0.1:19387/api/prompt-seed/optimize?debug=1' -H 'content-type: application/json' --data '{"text":"hi"}'` and check `_debug.codeVersion` |
-
-That last row is worth internalising, and it was measured rather than assumed:
-
-| what changed | install path | host half picks it up |
-|---|---|---|
-| reinstall the same package name with new content | unchanged | **no** — the process keeps running the cached module until restart |
-| install under a different path (renamed package) | changed | **yes** — the cache misses and the new module loads |
-
-Both cases were observed directly on a running app, and the frozen-at-load `codeVersion` is what
-makes them distinguishable: after a same-name upgrade it kept reporting the previous version while
-the new one sat on disk, and after the rename it reported the new one immediately. `disable` →
-`enable` only re-runs `apply` against the *cached* module, so it does not help either. **Restart the
-app after a normal upgrade**, and check `_debug.codeVersion` instead of trusting the tarball you
-just installed.
-
+| Validation | Count |
+|---|---|
+| Real-socket checks | ✅ 13 checks, run by `npm test` |
 
 ## Development
 
 ```sh
-npm test        # builds lib/ then runs 238 tests
-npm run build   # tools/build.mjs → lib/
+npm test        # builds lib/, runs 15 tests, 13 real-socket checks, docs/install guards
+npm run bench   # real-model benchmark on the default route
 ```
 
-Source layout:
+The benchmark corpus is `bench/corpus.json`; the runner is `tools/bench.mjs`. It checks exactly
+one call for content, zero for passthrough, failures, anchor preservation and p50/p95 latency.
+Quality is **not** machine-judged: use the 30-40 case blind review described in the release
+notes. Release gate: p95 ≤ 8 s, zero failures/bad calls/anchor loss, and human acceptance ≥80%.
 
-| Path | Role |
-|---|---|
-| `src/prompt-templates.js` | the meta-prompt asset, output normalization, input validation |
-| `src/host-core.js` | route resolution, `llm.stream` consumption, error normalization, adaptive/branch routing |
-| `src/signal-inference.js` | deterministic classification, anchor inference, degree checks for signals and short directives |
-| `src/session-context.js` | on-demand extraction of recent user turns from the session surface |
-| `src/sample-log.js` | the local event log (samples.jsonl) |
-| `src/host-plugin.js` | Cordis host plugin → `lib/index.js` |
-| `src/client-plugin.js` | browser factory body → wrapped into `lib/client.js` |
-| `tools/build.mjs` | copies the host half, wraps the browser half |
+## Limits
 
-`src/` is the tested source of truth; `lib/` is generated and should not be edited by hand.
-
-Test a local checkout without publishing:
-
-```sh
-npm pack --pack-destination /tmp
-dsh plugin --profile plugin-lab add /tmp/dsh-prompt-seed-$(node -p "require('./package.json').version").tgz
-dsh --profile plugin-lab --dump-config
-```
-
-## Publishing
-
-```sh
-npm run build
-npm publish --access public
-```
-
-Distribution options, from least to most friction for your users:
-
-| Form | Consumer runs | Notes |
-|---|---|---|
-| npm package | `dsh plugin add <name>` | prebuilt `lib/` ships in the tarball; no build permission needed |
-| tarball | `dsh plugin add ./x.tgz` | immutable, checksummable, good for review before publishing |
-| Git dependency | `dsh plugin add github:you/repo` | fetches **source**; needs a self-contained `prepare` **and** explicit `allowBuilds` approval from the user, which executes your code on their host outside the agent sandbox |
-
-Prefer npm or a tarball. Only add the Git path if you also ship a `prepare` that builds from a
-clean clone.
-
-## Verification status
-
-| Layer | How | Status |
-|---|---|---|
-| Prompt asset, normalization, validation, error codes | unit tests | ✅ |
-| Contract guard (both historical pathologies absent, counter-example triplets present) | template-content tests | ✅ |
-| Rewrite pipeline: elaboration gate, semantic audit, targeted repair, call budget | scripted multi-call `llm` stubs | ✅ |
-| Adaptive contract: MODE declaration, clarify budget + anchor rules, question routing, override continuity | unit + pipeline tests + live-model probes (glm-5.2: seed 10.2x / question 1.0x / precise 1.17x) | ✅ |
-| Gate credential: `DETAIL` parsing, `gate.verdict` / `rechecked` / `repairs` | unit tests | ✅ |
-| Depth: three suffixes, request wiring, invalid-value fallback | unit tests | ✅ |
-| On-demand context: anaphora / short-draft / precise-input rules | unit + route tests | ✅ |
-| Signals & short directives: classification, anchor priority order, refusal paths, degree cap | unit tests + live-model probes (six cases: two refusals at **0 model calls**, four grounded expansions) | ✅ |
-| Conversational branch: classifier on the real regression inputs, non-swallowing guards, cap with original-text fallback | unit tests + live-model probes (three regression inputs came back at **1.00×**, seeds still 17×) | ✅ |
-| Signal / deictic / conversational template overrides | unit tests + route test with a temp `$DSH_HOME` | ✅ |
-| Template overrides: read per request, live edit, fallback, `templates: false` | route test with a temp `$DSH_HOME` | ✅ |
-| Self-disable: missing `webServer` / `effect` / `slots` never throws | unit tests | ✅ |
-| Host route: loopback guard, method/body rejection, optional services | real `req`/`res` stubs | ✅ |
-| Host route over a **real socket**: three-part loopback guard (peer address, `Host` shape, `Origin`), cross-site `Origin` refused, `127.0.0.1.evil.example` refused, oversized body answered with `413` instead of resetting the connection | `tools/check-route-wire.mjs` mounts the route on a real `http.createServer` and drives it with raw HTTP | ✅ 24 checks, run by `npm test` |
-| Browser bundle: `__ModuleLoader__` shape, slot registration, rendered button props | test materializes the real bundle and renders it | ✅ |
-| Cross-artifact route consistency | test compares `lib/client.js` against the host default | ✅ |
-| `codeVersion` truthfulness | test rewrites `package.json` after load and asserts the reported version is unchanged | ✅ |
-| Bundle manifest, patch, tarball contents | `npm pack` + install into a throwaway profile | ✅ |
-| Published release equals the repository | `tools/verify-release.mjs`, run by CI on every published release | ✅ v0.9.3 byte-identical |
-| Real-model behaviour (seed unfolded, precise preserved, multilingual, depth) | live-route and direct-model probes against the installed bundle | ✅ |
-| Full click-through in a live browser session | not automated — `fetch` → route → refill is exercised in pieces, not end to end | ⛔ |
-
-## Known limitations
-
-1. **Reference chips degrade to plain text.** `@file` / `/command` chips project to `U+FFFC`, and
-   both `setDraft` and `insertText` strip that placeholder, so a rewrite cannot keep a chip a chip —
-   there is no API to rebuild chip nodes from text. The button stays enabled, the tooltip says so,
-   and a conservation guard refuses the write-back if any chip label would be lost. The reference
-   itself is never dropped silently; its structure is.
-2. UI strings are Chinese-only; the `locale` service is not wired.
-3. Non-streaming, and the call budget depends on which path the input takes:
-   **1** for a bare signal (anchored, not judged), a conversational message, a question-shaped
-   short message, or a declared `precise` rewrite kept near-verbatim (audit skipped);
-   **1–2** for a short directive (one draft, plus one tightened retry);
-   **2–3** for `clarify` (draft + audit, plus one clarify-only retry if over budget);
-   **2–4** for `seed` (draft + audit, unfold retry, or a repair that is always re-audited).
-   Measured 0.9 s (near-verbatim pass-through) to ~20 s (worst case, slow provider). The worst case
-   is the **rejection** path — four calls that end with the draft unchanged — which is why
-   `auditProvider` / `auditModel` and `deadlineMs` exist. Neither is set by default, so out of the
-   box nothing here changes the numbers above.
-4. `TONE_SHIFTED` and `PADDED` are judgement calls by the audit model, not deterministic checks —
-   a misjudgement inside the tolerance band is the residual fidelity risk. The converse is also
-   real and deliberate: a repair that returns the same text is **still re-audited**, because the
-   first verdict may simply have been wrong, and skipping the re-check to save a call would turn a
-   false alarm into a refusal.
-5. The audit judge and the rewriter share the routed model **by default**; `auditProvider` +
-   `auditModel` route the two audit calls elsewhere. What is still missing is a knob per *kind* of
-   call — the repair is a rewrite and stays on the main route on purpose.
-6. Depth adaptation needs a few runs before it moves (deliberately: two signals minimum, so two
-   clicks cannot swing it).
+- A single provider call can still be slow; 15 s without a new token aborts, the host budget is
+  20 s, and a healthy stream is not cut at 12 s.
+- `reasoningEffort: "low"` is sent when the selected route declares reasoning; the DSH adapter
+  rejects `none` for this route. The plugin does not add hidden retries.
+- Context uses the recent 3 user turns + 2 assistant tails, max 1400 chars, only to resolve
+  references; it is not a rewrite target.
+- Prediction is back for an empty composer; depth modes remain removed; optimization jobs are
+  host-owned and session-scoped.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
-
-Not affiliated with, endorsed by, or sponsored by DeepSeek. "DeepSeek Harness" and "DSH" refer to
-the open-source host application this plugin targets; this is an independent third-party plugin, and
-no license in this repository grants any trademark rights.
+MIT.

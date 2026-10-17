@@ -26,6 +26,10 @@ cordis.patch.local.yml
 *.log
 logs/
 coverage/
+bench/latest.json
+bench/quality-latest.json
+bench/quality-judge*.json
+docs/0.14.0-debug-report.md
 *.tsbuildinfo
 
 # 操作系统

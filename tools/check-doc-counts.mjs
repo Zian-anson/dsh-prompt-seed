@@ -8,7 +8,7 @@
  * 版本是读者判断整份文档是否最新的最廉价信号，留在文档里的旧值会让整页内容一起打折。
  * 机器能查的事不该靠人记得。
  */
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -19,8 +19,9 @@ const problems = [];
 let checked = 0;
 
 // ---- 1) 测试计数 ----
-// 只统计顶层测试声明（本仓库所有用例都是顶层 test(...)，嵌套子测试会改变口径）
-const actual = (read("test/optimizer.test.mjs").match(/^test\(/gm) || []).length;
+// 统计 test/*.test.mjs 的顶层测试声明（本仓库所有用例都是顶层 test(...)，嵌套子测试会改变口径）
+const testFiles = readdirSync(join(root, "test")).filter((name) => name.endsWith(".test.mjs"));
+const actual = testFiles.reduce((sum, name) => sum + (read(join("test", name)).match(/^test\(/gm) || []).length, 0);
 if (actual === 0) {
   console.error("[docs] 没统计到任何测试：正则或测试写法变了，守卫本身失效比数字漂移更危险");
   process.exit(1);

@@ -9,6 +9,537 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.19.1] - 2026-10-18
+
+### Fixed
+
+- Task rewrites were still inflating: "帮我做个登录页" could add mobile/accessibility/acceptance
+  requirements not present in the input. The contract now forbids new features, steps, tests or
+  acceptance criteria; precise instructions with explicit paths stay near-verbatim.
+- Login example tightened to the minimum implied details.
+
+### Quality
+
+- 30-case blind pre-screen: fidelity 4.73/5, clarity 4.90/5, restraint 4.73/5, usability 5.00/5;
+  10 better, 19 same, 1 worse (causal "导致" added to a complaint). 30/30 one call, 0 failures.
+- This is a model blind pre-screen, not human sign-off.
+
+## [0.19.0] - 2026-10-18
+
+### Removed (core refactor)
+
+- Five-route classification, shape templates, ambiguity scoring, target ratios, clarity-gain
+  checks, repair calls, invented-anchor checks, speech-act/polarity/certainty gates, taskified
+  checks and hard length gates.
+- The second model call. Every content input now makes exactly one call.
+
+### Changed
+
+- **One prompt contract:** rewrite the user's message into a clearer version of the same
+  message; do not answer, execute or add requirements. Preserve intent, speech act, language,
+  uncertainty and explicit path/identifier anchors.
+- **One guard only:** empty/model error returns the original; explicit paths/file names/URLs/
+  identifiers lost returns the original with anchor_lost. No semantic judgment.
+- Final/meta payloads are minimal: no shape/ambiguity/targetRatio/clarity/repair fields.
+- maxTokens remains absent; first-call idle watchdog remains 15s, host budget 20s.
+- First-optimize session creation/title, jobs, prediction, undo and auto-reload are unchanged.
+
+### Tests
+
+- 11 focused tests; old routing/validation/repair tests removed.
+
+## [0.18.4] - 2026-10-17
+
+### Fixed
+
+- **Long messages about the assistant itself were expanded into task briefs.** A statement like
+  "以后你每次修改自身插件后直接重启" was classified as a seed task and produced a 目标/交付物
+  plan. Assistant-directed meta instructions now use the concise request shape; task briefs stay
+  reserved for actual build/change requests.
+- **A 12s total-call timeout was cutting healthy generations.** The first call no longer has a
+  fixed total timeout; a 15s idle watchdog aborts only when no token arrives for 15s. The host
+  budget is 20s. Repair remains short and bounded.
+- **The plugin now watches its installed module and restarts its own fiber when the file changes.**
+  Once this version is loaded, subsequent package updates no longer require a manual plugin
+  restart.
+
+### Tests
+
+- 34 tests; added assistant-meta request shape and self-reload bundle coverage.
+
+## [0.18.3] - 2026-10-17
+
+### Fixed
+
+- **invented_anchor was rejecting useful verification answers.** A chat question asking how to
+  verify could legitimately mention a version number, URL or command; the validator treated
+  every new anchor as invented and returned validation_failed. The anchor guard now applies
+  only to precise edits, where the exact path/identifier must be preserved. Chat/question/task
+  outputs may introduce concrete verification details.
+
+### Tests
+
+- 32 tests; added a chat question with a new version number/path that must pass validation.
+
+## [0.18.2] - 2026-10-17
+
+### Fixed
+
+- **Short anaphoric change requests no longer become task briefs.** "可以，按这个进行修改。"
+  is a request on an existing artifact, not a new build task; it now uses the concise request
+  shape (one clear instruction), while explicit new work such as "帮我做个登录页" stays task.
+
+### Tests
+
+- 31 tests; added short anaphoric request coverage.
+
+## [0.18.1] - 2026-10-17
+
+### Fixed
+
+- **Short check requests were expanded into task briefs.** "现在应该已经更新了，你看看。" was
+  classified as clarify + task, producing 目标/交付物 sections and reading like a model answer.
+  The new request shape rewrites it as one direct instruction, with no headings or checklist.
+  Task briefs remain reserved for explicit build/change seed requests.
+- **Prompt-side character ceilings raised** to match the removed maxTokens safety line:
+  task 4000, question/statement 2000, request 800.
+
+### Tests
+
+- 30 tests; added request-shape classification, validation and negative task-brief coverage.
+
+## [0.18.0] - 2026-10-17
+
+### Added (first optimization creates a real conversation)
+
+- **In a blank new chat, the first optimize now creates a real Session before starting the
+  job.** The session receives a generated title from the prompt, opens with the draft intact,
+  and keeps the optimization task bound to its sessionId. Switching away and back no longer
+  loses the draft or the job.
+- **No message is sent automatically.** The result is written back into the composer; the
+  session remains a titled draft until the user sends something.
+- **Draft/session handoff** uses sessionStorage keyed by the new sessionId; a pending marker
+  starts exactly one optimization in the new composer.
+- **Session title** is generated deterministically from the first line (max 24 chars), with
+  no extra model call; manual renames are not overwritten.
+
+### Changed
+
+- **Plugin maxTokens is removed** from optimization and prediction requests. The provider's
+  own output limit still applies; the plugin no longer truncates at 900 tokens.
+- **Output safety line** raised to task 4000 / question-statement 2000 chars; overlong output
+  is cut at a sentence boundary and marked truncated, not rejected.
+- **Long mixed requests** with discussion/boundary/decision markers are no longer classified
+  as a single question just because they contain question marks.
+
+### Tests
+
+- 28 tests; added soft-truncation, long-mixed classification, no-maxTokens and first-session
+  bundle assertions.
+
+## [0.17.0] - 2026-10-17
+
+### Changed (core logic)
+
+- **Every non-passthrough input now gets one understanding-expansion round.** Routing no
+  longer decides whether to expand; it only chooses the output shape and target ratio. Chat,
+  questions, opinions, complaints, confirmations and precise instructions all get clarified.
+- **Ambiguity score drives expansion.** Deterministic features (referents, vague terms,
+  contradictions, multiple intents, short input, missing object/anchor) produce a 0-8 score and
+  a target ratio. Seed floors at 1.8x; chat statements/ questions get proportional expansion.
+- **Chat is no longer a no-op branch.** A vague chat message is clarified; a clear one stays
+  light. Speech act, polarity, certainty, language and anchors are hard invariants; non-task
+  input cannot become a task/checklist.
+- **One optional repair, for any route.** If the first round is hard-invalid or has no clarity
+  gain, one repair call is allowed when the first call took under 4s. Max 2 calls, 15s host
+  budget, first call 12s, repair 2.5s. If repair fails, the first hard-valid draft is kept.
+- **Context window expands** to 3 user turns + 2 assistant tails, max 1400 chars, for all
+  non-passthrough requests.
+- **Prompts are unified** around a meaning-clarifier contract with shape-specific output
+  (task/question/statement/confirmation/precise) and few-shot examples.
+- **Telemetry** records shape, ambiguity, targetRatio, repairAttempted, clarity and calls.
+
+### Tests
+
+- 26 tests; added chat-repair, unknown-session, 3+2 context and 0.17 validation cases.
+
+## [0.16.3] - 2026-10-17
+
+### Changed
+
+- **Composer buttons are icon-only.** The optimize spark, empty-input crystal ball, undo and
+  redo no longer render text labels; the wording remains in the tooltip and aria-label.
+- **Busy state has a spinner again.** Optimizing and predicting both replace the static icon
+  with an animated spinner; elapsed time stays in the tooltip.
+
+## [0.16.2] - 2026-10-17
+
+### Fixed
+
+- **Every model call failed with 400 MissingSessionID.** The 0.16.1 host rewrite dropped
+  bindLlmSession, so llm.stream requests had no sessionId and the DSH adapter could not send
+  x-opencode-session. Live sample at 14:53 ("失败了") failed in 1.7s with the exact error. The
+  host now wraps the LLM service per run: real sessionId when available, and a stable
+  prompt-seed-<runId> for script calls. Both optimize and predict use the wrapper.
+- **Regression test added.** A strict fake adapter now returns MissingSessionID whenever
+  request.sessionId is absent; both optimize and predict tests assert the wrapper supplies it.
+  The previous fake LLM ignored sessionId, which is why 0.16.1 passed tests and failed live.
+
+### Tests
+
+- 25 tests; 13 wire checks unchanged. Empty-input crystal ball and Chinese labels from 0.16.1
+  are unchanged.
+
+## [0.16.1] - 2026-10-17
+
+### Fixed
+
+- **Every non-passthrough call failed immediately.** The host sent
+  reasoningEffort "none" to the DSH adapter, which rejects that value for
+  opencode-go/deepseek-v4.1-flash ("does not support reasoning effort none"). It now sends
+  "low", the lowest value the adapter accepts. Real samples showed 4 consecutive llm_error
+  calls in ~160 ms before this fix.
+- **The empty composer showed "Optimize Prompt" instead of the crystal ball.** Prediction had
+  been removed with the 0.15 rewrite. It is restored: empty input + conversation context shows
+  the crystal ball, a predict action reads the recent window, makes exactly one call and fills
+  the next-message suggestion. No prediction on a blank new conversation.
+- **The button was English even in the Chinese app.** The client now uses the Chinese strings
+  (the locale service reports en-US in this profile); the empty state reads 预测下一句.
+
+### Tests
+
+- 24 tests: added a host prediction test (one call, context window) and updated the reasoning
+  assertion to low; 13 wire checks unchanged.
+
+## [0.16.0] - 2026-10-17
+
+### Added
+
+- **Host-owned session jobs.** Optimization no longer lives on the HTTP request/component.
+  Switching conversations only detaches the local stream; the host job keeps running and a
+  returning client restores it with a status query. Explicit cancel is the only cancel.
+- **New-conversation key.** A blank conversation has no sessionId yet; the client generates a
+  draft conversationKey, starts the job under it, and binds it to the real sessionId when one
+  appears. Results are recoverable across switches.
+- **Ready state instead of overwrite.** If the draft is unchanged when the job finishes, the
+  result is applied; if the user edited the draft while away, the result is kept and the button
+  says "result ready — click to retrieve".
+- **Per-conversation status API.** status / bind / cancel / consume actions; a job exposes
+  inputText, partialText, result, error, route and timestamps. There is no "list all tasks"
+  endpoint and no global monitor.
+- **No numeric badges.** A job running in another conversation produces no count or badge in
+  the current composer. The old sessionId:null jobs were counted as "other" and produced the
+  "1/2" artifacts; that path is gone.
+
+### Changed
+
+- The job store is in-memory, TTL 10 minutes, max 4 running / 32 total. Host restart loses jobs
+  cleanly; there is no tasks.json, no disk corruption window, and no stale running state.
+- The client falls back through props.sessionId, props.session.id/sessionId and the useSession
+  snapshot; previously it only read props, so a missing sessionId also lost context.
+- 23 product-level tests, including disconnect-continues-job, unbound key bind, cancel and
+  job_running. The 0.15 single-call optimizer and deterministic validator are unchanged.
+
+## [0.15.0] - 2026-10-17
+
+### Changed (breaking)
+
+- **Complete core rewrite.** One click makes exactly one model call (zero for greetings and
+  acknowledgements). The 2,060-line host-core, the unified/split pipelines, semantic audit,
+  repair, re-audit, language repair, unfold/tighten retries, prediction, background tasks and
+  depth modes are removed. v0.14.4 remains the rollback tag.
+- **Code-side routing.** The model never chooses seed/clarify/precise. Deterministic rules route
+  to seed, clarify, precise, chat or passthrough; uncertain input defaults to chat, never seed.
+  This fixes the real 0.14.4 failures: "好了" took 13s/3 calls with no change, a 13-character
+  status message took 17s/4 calls with no change, and a 20-character complaint was expanded into
+  a test plan in 94s/6 calls.
+- **Fifteen-second budget.** requestTimeoutMs defaults to 15s. A slow or hanging provider returns
+  request_timeout; no 120s ceiling.
+- **Streaming UI.** The host returns NDJSON meta/delta/final; the client shows a live preview and
+  only writes the draft after a successful final. JSON remains available with stream:false.
+- **Deterministic validation is the only gate.** Length bands, language, anchors, speech act and
+  protocol contamination are checked after the call; failure keeps the original and returns a
+  reason. Seeds that do not change are failures, not "success".
+- **Context shrinks** to one assistant tail (300 chars) + one user turn (200 chars), read only for
+  short/anaphoric drafts.
+- Removed config: pipeline, depth, auditProvider, auditModel, deadlineMs, rewriteReasoningEffort,
+  predict, tasks. Kept: route, provider/model, requestTimeoutMs, context, samples, templates.
+
+### Tests
+
+- Replaced the 302 internal-branch tests with 19 product-level tests and 13 real-socket checks.
+- Added a real-model benchmark script on the default route.
+
+## [0.14.4] - 2026-10-17
+
+### Fixed
+
+- **A 15-character conversational question took 15.2 s.** The clarify branch asked for only
+  400 output tokens while the host forces `low` reasoning on reasoning routes; direct probes
+  showed 3 of 4 calls spent all 400 tokens on reasoning and returned an empty body, so
+  `callModel` doubled the budget to 800 and re-ran the same prompt (2 calls, 15.2 s). The
+  clarify branch now sends `reasoningEffort: "none"` when the route declares reasoning (zero
+  thinking tokens), starts at 1,000 tokens (up to 1,600), and allows `callModel` one internal
+  doubled-budget retry. Real-model probe: 15.2 s / 2 calls -> 1.9-2.5 s / 1 call.
+- **Questions followed by a parenthetical aside were classified as statements.** Both the
+  conversational router and the clarification speech-act guard only looked at the final
+  character, so "还有没有别的问题？(这次体验明显过慢。)" could be accepted as a statement.
+  Any `?` now marks a question, trailing parentheticals are stripped before checking question
+  particles, and a statement draft is rejected and retried.
+- **A few characters over the length cap no longer trigger a second full call.** A
+  clarification up to 8 characters over the 2x+12 cap is accepted as-is (with a log line);
+  only real overshoots are tightened.
+- The sample log and `?debug=1` now include the result's `detail` field, so a "2 calls"
+  record can be attributed to an internal budget retry vs. a clarification retry without
+  guessing.
+
+### Changed
+
+- Conversational clarification is explicitly a light task: no reasoning tokens, and each
+  `callModel` invocation may retry internally only once. The branch still makes at most two
+  `callModel` invocations (first draft + one clarification retry), i.e. at most 4 provider
+  calls in the worst case; the normal case is exactly 1.
+
+## [0.14.3] - 2026-10-17
+
+### Changed
+
+- **Conversational messages are now clarified, not merely tidied.** Questions, confirmations,
+  opinions and complaints used to be typo-polished only and often came back verbatim (the
+  complaint "优化功能又没有任何优化"). The new clarify contract keeps the speech act (a
+  question must still read as a question; never a task brief), resolves vague references with
+  CONTEXT, makes the implied object/criterion/next step explicit, and allows a moderate
+  expansion up to about 2x. A first draft that repeats the input triggers one "clarify harder"
+  retry; if that still cannot improve it within the limit, the original is returned. The
+  fallback paths from seed/clarify/empty rewrites keep the old 1.35x typo-only polish.
+- The conversational branch now receives the same session context block as the main rewrite.
+  Context remains a reference resolver, never a source of new requirements.
+
+## [0.14.2] - 2026-10-17
+
+### Fixed
+
+- **Real clicks became 35-65 seconds after the 0.14.x quality work.** The optional-call
+  deadline had been raised to 45s and a second seed-tighten pass was added; on a slow
+  reasoning provider a 15-character input could run rewrite -> tighten -> second tighten ->
+  light-polish (~4 calls x 8-15s). The observed cases are in the local samples: 35.5s and
+  65.1s. The second tighten is removed, the deadline is back to 20s, and a budget-exhausted
+  overflow now delivers the already-tightened draft with an honest unverified gate instead
+  of spending one more call.
+- **Reasoning models were invoked at the provider's default thinking level.** The plugin
+  forwarded no reasoningEffort, so opencode-go ran deepseek-v4.1-flash with its own default
+  effort; single calls measured 8-15s. When the selected route declares a reasoning effort,
+  every plugin call now defaults to the lowest supported level (low); none/inherit and an
+  explicit minimal/low/medium/high/xhigh/max are still honored. This applies uniformly to
+  rewrite, audit, repair and prediction.
+- **Complaints about the plugin were treated as task seeds.** "不对，有问题，现在速度非常慢。"
+  went through unfold/tighten/fallback and took 46-65s. Messages that start with an explicit
+  disagreement or talk about the plugin/composer being slow/broken now route to the
+  conversational branch: one light-polish call, ~8s, same text.
+
+### Added
+
+- Every optimize/predict sample and ?debug=1 result now carries llmCalls and llmMs, so
+  latency can be attributed to call count versus per-call time without reading logs.
+
+## [0.14.1] - 2026-10-17
+
+### Fixed
+
+- **opencode-go rejected every plugin call with 400 MissingSessionID.** The running
+  profile's default provider requires the per-conversation routing header
+  x-opencode-session; DSH forwards a call's sessionId into that header, and the plugin
+  never passed one. Every llm.stream call from the plugin (rewrite, audit, repair,
+  language repair, prediction) now carries the request's sessionId; script calls with
+  no session get a stable run-derived identity so they no longer fail either. This is
+  what made the 0.14.0 star look dead after the app restart.
+
+## [0.14.0] - 2026-10-17
+
+### Fixed
+
+- **Malformed unified replies wrote section markers into the composer.** When the model
+  emitted MODE plus DRAFT/FINAL but skipped AUDIT, the fallback parser only stripped the
+  MODE line, so `DRAFT:` / `FINAL:` appeared in the message box. The protocol stripper is
+  now shared by prompt-templates and extracts FINAL, then DRAFT, then the marker-free body;
+  the malformed branch also keeps the declared mode (`precise` no longer degrades to seed).
+- **Only the user turns reached the rewrite/audit context.** The latest assistant turn was
+  used by the signal branches but never sent to the main seed/clarify/audit prompts, so
+  "apply the approach we just discussed" could not resolve the approach. It is now merged
+  into the CONTEXT block (up to three user turns + the latest assistant turn).
+- **Precise-looking anaphoric drafts skipped session context.** The shortcut treated every
+  precise instruction as self-contained, including "change the file from the plan above".
+  Context is now read whenever the deterministic anaphora/short-draft test fires.
+- **A translated rewrite was delivered as a successful optimization.** Chinese input could
+  come back in English with gate ok. A deterministic script-count guard now checks every
+  seed/clarify/precise result: on drift one language-repair call (plus an independent audit)
+  runs; if it still drifts the result is `fidelity_rejected`. Conversational touch-ups return
+  the original, signal/deictic inference returns `cannot_infer`, and prediction refuses.
+- **Background tasks could stay running forever.** The deadline only aborted the provider;
+  one ignoring the signal wedged four slots and the fifth submit hit the concurrency cap.
+  The timer now settles the task as `request_timeout` and releases its controller;
+  `consumeTask` also refuses running tasks, and prune never deletes them.
+- **Concurrent task-store flushes corrupted `tasks.json`.** Two flushes shared one `.tmp`
+  path; stress runs left unparsable JSON in 7/20 trials. Flushes are serialized, temp names
+  are unique, and a flush requested during a write is replayed once after it.
+- **A truncated rewrite with non-empty text was rejected without a second chance.** It is
+  still never backfilled, but one doubled-budget regeneration now runs first; only a second
+  truncation is reported as `truncated`.
+- **Seed drafts still above 3.5x after one tighten were delivered anyway.** The 25-character
+  baseline case grew 9.25x in 6 calls / 185s and was immediately reverted. Such drafts now
+  fall back to the ~1x light polish instead of the audit/elaboration chain.
+- **Unified self-audit trust gaps.** `AUDIT: OK` with `FINAL != DRAFT` now falls back to an
+  independent audit instead of delivering an unaudited edit, an unparsable self-audit also
+  falls back, and a self-reported violation fixed only by punctuation is rejected as a sham.
+- **Content-free rewrites could be delivered.** A clarify draft of just `。` passed the 0.7x
+  lower bound; punctuation/emoji/zero-width-only outputs now fall back to a light polish.
+  Zero-width-only, flag/mahjong-emoji-only and lone-surrogate inputs are content-free too.
+- **Route wall-clock timeout started too late.** It wrapped only the model call, so a hanging
+  `readSurface` or template read could hang the request forever; the timeout now wraps the
+  whole channel (context reads included).
+- **Signal / deictic / conversational / prediction outputs could leak protocol markers**, and
+  the prediction path now also strips them before validation.
+- **Initial background submit fallback bypassed the concurrency cap.** `too_many_tasks` no
+  longer re-submits on the foreground path; it is surfaced to the user instead.
+- **Cancelling a run could be undone by the restore effect.** Cancelled task ids are
+  remembered, so a monitor tick between the click and the host-side cancel cannot re-adopt
+  the task; a task registered after an early cancel is explicitly cancelled. Ready results
+  are de-duplicated and re-check reference conservation against the current draft.
+- **THIN + exhausted optional-call budget was reported as full/ok.** It now reports tier
+  `thin` with the thin gate; the seed tighten call also respects the optional-call deadline.
+
+### Changed
+
+- **Structure guidance:** seed mode asks for short paragraphs grouped by concern, the user's
+  own order of asks, no headings/labels, and lists only when the detail is list-shaped.
+  Clarify keeps the draft's order (primary ask first). The all-modes language rule now
+  explicitly forbids translating any part of the draft.
+
+## [0.13.5] - 2026-10-17
+### Fixed
+
+- **Inputs containing `$` patterns (`$&`, `$\``, `$'`, `$$`) corrupted the prompt sent to
+  the model.** The user draft was interpolated with a string `replace()` replacement, which
+  interprets those patterns: `price 是 $&` leaked the literal `{input}` placeholder into the
+  rendered prompt, `$\`` duplicated the whole template tail, `$'` silently dropped part of
+  the request. Interpolation now uses a replacer function (literal insert, no pattern
+  semantics).
+- **Reasoning models that spend the entire token budget on reasoning produced an empty
+  rewrite and a dead `truncated` error.** Measured live: glm-5.2 can burn 2400 completion
+  tokens on reasoning and return zero content with `finish=length` — reasoning depth on the
+  same input varied from ~2.1k to ~4.8k tokens across calls. When a call ends `max-tokens`
+  **with no text at all**, it now climbs a three-step budget ladder (original → 2× → 4×,
+  capped at 8000) so reasoning can finish and leave room for the answer; one real click was
+  observed needing all three rungs (rewrite, tighten and audit each rescued). Truncation
+  with non-empty text still refuses outright — a half-written prompt is never backfilled.
+- **Non-CJK, non-Latin inputs got no per-request language check.** Korean and Russian fell
+  into `unknown` in `detectScript`, so only the static template rule defended against
+  translation drift. Hangul and Cyrillic are now first-class script classes with their own
+  hints, any other alphabetic script (Arabic, Devanagari, Greek, Thai…) gets a generic
+  same-language hint, and the hint text lives in one shared `languageHintFor` table used by
+  both system-prompt builders.
+- **Protocol markers could leak into the composer from follow-up calls.** The THIN
+  elaboration and the clarify tighten retry parsed their output with bare
+  `parseAdaptiveResult` (strips only the MODE line); a model drifting into the unified
+  DRAFT/AUDIT/FINAL layout there would emit those markers into the input box. Both sites now
+  run the full `stripUnifiedProtocol`.
+- **A malformed host reply could spin the background poll forever.** A terminal task whose
+  `ok` result carried a non-string `text` threw inside the poll callback, was caught as a
+  transient fetch failure, and re-polled the same terminal task indefinitely. Shape drift is
+  now treated as a failure and consumed.
+- **The live eval harness measured the wrong pipeline.** It dropped `input.system` (the
+  model never saw the contract) and mapped every `finish_reason` to `stop` (hiding both
+  truncation and the new empty-truncation path). It now sends the system prompt and reports
+  `length` as `max-tokens`, matching the production `llm` service semantics.
+
+### Changed
+
+- **Adaptive contract now shapes the seed output and pins retention.** Seed mode is told to
+  write the user's own fuller draft — goal in their words first, detail in a readable order,
+  one self-contained request, never a report about it. Clarify mode must keep the user's
+  wording where it was already clear and carry over every stated fact. A new all-modes hard
+  rule forbids dropping/replacing stated choices and dangling half-finished output.
+
+## [0.13.4] - 2026-10-17
+
+### Fixed
+
+- **Ready star with a pending prediction started a new optimization instead of filling the
+  prediction.** With a non-empty draft the predict slot is replaced by the star; its ready
+  branch only recognized optimize tasks, so the click fell through to the optimize path.
+  Ready now means "click to fill" for both kinds.
+- **Task monitor could spin forever.** The polling interval stopped only on a successful
+  empty running list; persistent fetch failures or a page with no mounted composer kept it
+  alive. It now also stops when the last subscriber unsubscribes or when fetch fails with
+  nobody listening.
+
+## [0.13.3] - 2026-10-17
+
+### Fixed
+
+- **Ready pill crushed to "Pr…" after switching sessions.** The toolbar slot is ~40px wide;
+  0.13.2's overflow cap made flex shrink the hint into an ellipsis stub (0.13.1 had the
+  opposite failure — overflow over the model picker). Inline text in this slot is
+  unfixable, so states are now icon-only: ready = brand color + breathing glow, failure =
+  red warning, neutral refusal = dimmed ball; all wording lives in the tooltip. The 14px
+  cross-session count badge is the only inline text that fits.
+- **Predictions now auto-fill on return.** Coming back to a session with an empty draft
+  writes a finished, unconsumed prediction straight into the composer (and consumes it) —
+  no click on a crushed button required. A handled-task set keeps the restore effect from
+  re-applying the same result on every monitor tick.
+
+## [0.13.2] - 2026-10-17
+
+### Fixed
+
+- **Ready-state hint collided with the model selector.** The "result ready" hint is a
+  growing pill inside a fixed toolbar slot; the long call-to-action text (nowrap, no width
+  cap) pushed into the model picker. Hints are now short status words (full text moved to
+  the tooltip with an explicit "click to fill in") and capped at 11em with ellipsis.
+
+## [0.13.1] - 2026-10-17
+
+### Fixed
+
+- **Background prediction always failed with "runner is not a function."** `startBackgroundTask`
+  invokes every channel with the uniform 4-arg signature `(body, sessionId, text, options)`,
+  but `handlePredict` still declared 3 params — its options position caught the `text`
+  string, destructured `runner` to `undefined`, and the task failed instantly (the registry
+  recorded the reason; optimize was unaffected thanks to its 4-param signature). Signature
+  unified, plus a real-socket regression check: a fast-LLM background prediction must reach
+  `done` with prediction text.
+
+## [0.13.0] - 2026-10-17
+
+Behavior change: **optimization and prediction tasks now run detached from the request that
+started them.** Switching sessions or opening a new conversation no longer cancels or
+discards a running task — the host process owns it, persists every state transition, and the
+client is just an observer that can detach and re-attach at will.
+
+### Added
+
+- **Background task registry (host).** `body.background: true` registers the run in a
+  persistent registry (`$DSH_HOME/prompt-seed/tasks.json`, `tasks: false` disables) and
+  returns a `taskId` immediately; the pipeline keeps running with its own deadline
+  (unref'd, `requestTimeoutMs`), **without** listening for client disconnect — that is the
+  whole point. New channels on the same route: `{taskId}` (poll), `{tasks: true,
+  sessionId?}` (list), `{cancelTask}` (cancel), `{consumeTask}` (mark result taken).
+  Concurrency capped at 4; a host restart reaps leftover `running` records as
+  `host_restarted` failures instead of leaving them spinning forever.
+- **Failures leave a trace.** Timeout, provider error, cancellation and restart all settle
+  into a terminal state with a code and a human-readable reason; nothing disappears
+  silently, and the client surfaces the reason next to the button.
+- **Client observer mode.** Submit → poll (1.2s) → apply. Switching away stops only the
+  local polling; coming back (or reloading) re-adopts the running task via a session-scoped
+  query. If the draft changed while away, the result is not overwritten — the button enters
+  a **ready** state ("result ready — click to fill in") and one click applies it with a
+  proper undo entry. A fallback to the old synchronous request path preserves 0.12 behavior
+  when the registry is unavailable.
+- **Cross-session visibility.** A module-level monitor polls the task list while anything
+  is running; every mounted button shows a count badge for tasks belonging to other
+  sessions, and busy tooltips state that switching sessions will not interrupt the run.
+
+
 ## [0.12.0] - 2026-10-12
 
 Architecture change: **the rewrite and the audit are now one model call** (`pipeline: "unified"`,
