@@ -71,7 +71,7 @@ window.__ModuleLoader__.load({
 ${indent(body.trim(), 2)}
 
 		exports.name = "prompt-seed";
-		exports.inject = ["slots"];
+		exports.inject = ["slots", "sessions", "uiWorkspace"];
 		exports.apply = apply;
 		return module.exports;
 	}

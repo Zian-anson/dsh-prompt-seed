@@ -6,6 +6,7 @@
  */
 
 const ROUTE = '/api/prompt-seed/optimize';
+const CLIENT_VERSION = '0.19.2';
 
 const STRINGS = {
   zh: {
@@ -455,16 +456,26 @@ function OptimizeButton(props) {
 
   React.useEffect(function () {
     if (typeof sessionId !== 'string' || sessionId === '') return;
-    if (autoStartTextRef.current !== '') return;
+
+    // openSession 后组件可能复用而不是卸载；重置创建锁，交给 pending 自动启动。
+    creatingRef.current = false;
+
     const pending = readFirstPending(sessionId);
     if (pending !== null) {
-      autoStartTextRef.current = pending.text;
-      inputActions.setDraft(pending.text);
-      draftRef.current = pending.text;
-      saveSessionDraft(sessionId, pending.text);
+      const pendingText = pending.text;
+      autoStartTextRef.current = '';
+      inputActions.setDraft(pendingText);
+      draftRef.current = pendingText;
+      saveSessionDraft(sessionId, pendingText);
       clearFirstPending(sessionId);
+      // draft 可能已经等于待恢复文本，不能依赖第二次 draft effect 才启动。
+      const starter = setTimeout(function () {
+        if (mountedRef.current) run(pendingText);
+      }, 0);
+      starter.unref?.();
       return;
     }
+
     const saved = readSessionDraft(sessionId);
     if (saved !== '' && (typeof draftRef.current !== 'string' || draftRef.current === '')) {
       inputActions.setDraft(saved);
@@ -641,10 +652,13 @@ function OptimizeButton(props) {
 
   async function startFirstOptimize(text) {
     if (creatingRef.current) return;
-    if (sessionApi === undefined || sessionApi === null || typeof sessionApi.create !== 'function' || typeof sessionApi.open !== 'function') {
+
+    // 服务不可用时绝不能阻塞优化：回落为当前输入框直接优化。
+    if (sessionApi === undefined || sessionApi === null || sessionApi.available !== true) {
       run(text);
       return;
     }
+
     const workspaceId = resolveWorkspaceId(props, session, sessionSnapshot);
     const cwd = resolveCwd(props, session, sessionSnapshot);
     creatingRef.current = true;
@@ -652,6 +666,15 @@ function OptimizeButton(props) {
     setPreviewState('');
     setErrorState('');
     setNoteState(tr('creating'));
+
+    function fallbackDirect(message, error) {
+      if (!mountedRef.current) return;
+      creatingRef.current = false;
+      setNoteState(message);
+      if (error !== undefined) console.warn('[prompt-seed] first-optimize session flow failed; optimizing directly', error);
+      run(text);
+    }
+
     try {
       const request = workspaceId !== undefined ? { workspaceId: workspaceId } : (cwd !== undefined ? { cwd: cwd } : {});
       const created = await sessionApi.create(request);
@@ -659,10 +682,13 @@ function OptimizeButton(props) {
         ? (typeof created.sessionId === 'string' ? created.sessionId : created.id)
         : undefined;
       if (typeof newId !== 'string' || newId === '') throw new Error('session create returned no id');
+
       const autoTitle = titleFrom(text);
       markOriginSession(newId);
       saveFirstPending(newId, text, autoTitle);
       saveSessionDraft(newId, text);
+
+      // create 复用了当前 blank Session：直接在当前组件启动优化。
       if (newId === sessionId) {
         try {
           if (typeof sessionApi.rename === 'function') await sessionApi.rename(newId, autoTitle);
@@ -673,19 +699,29 @@ function OptimizeButton(props) {
         run(text);
         return;
       }
-      sessionApi.open(newId);
+
+      try {
+        sessionApi.open(newId);
+      } catch (openError) {
+        clearFirstPending(newId);
+        throw openError;
+      }
+
+      // openSession 正常会切换 sessionId；若 3s 后仍停留在旧输入框，直接优化，不能让点击卡死。
+      const watchdog = setTimeout(function () {
+        if (mountedRef.current && creatingRef.current) {
+          fallbackDirect('已创建对话但未打开，已直接优化当前输入');
+        }
+      }, 3000);
+      watchdog.unref?.();
+
       try {
         if (typeof sessionApi.rename === 'function') await sessionApi.rename(newId, autoTitle);
       } catch (titleError) {
         console.warn('[prompt-seed] session title failed', titleError);
       }
     } catch (error) {
-      creatingRef.current = false;
-      if (mountedRef.current) {
-        setBusyState(false);
-        setNoteState('');
-        setErrorState((error && error.message) || tr('failed'));
-      }
+      fallbackDirect('创建对话失败，已直接优化当前输入', error);
     }
   }
 
@@ -831,7 +867,10 @@ function OptimizeButton(props) {
     if (predictMode) { runPredict(); return; }
     if (ready !== null) { applyJob(ready, draftRef.current); return; }
     if (busy) { cancelJob(); return; }
-    if (blankSession || typeof sessionId !== 'string' || sessionId === '') { startFirstOptimize(draft); return; }
+    if ((blankSession || typeof sessionId !== 'string' || sessionId === '') && !(typeof sessionId === 'string' && isOriginSession(sessionId))) {
+      startFirstOptimize(draft);
+      return;
+    }
     run(draft);
   }
 
@@ -873,6 +912,7 @@ function OptimizeButton(props) {
     title: label,
     'aria-label': label,
     'data-testid': 'prompt-seed-optimize',
+    'data-client-version': CLIENT_VERSION,
   }, children);
 
   const extras = [];
@@ -899,50 +939,58 @@ function OptimizeButton(props) {
   return React.createElement('span', { className: 'dsh-opt-group' }, [main].concat(extras));
 }
 
-function serviceOf(ctx, name) {
-  try {
-    if (typeof ctx.get === 'function') return ctx.get(name);
-    return ctx[name];
-  } catch (e) { return undefined; }
-}
-
 function apply(ctx) {
-  const slots = ctx.slots;
-  if (slots === undefined || typeof slots.inject !== 'function' || typeof slots.register !== 'function') {
-    console.warn('[prompt-seed] slots service unavailable; the button will not be mounted.');
-    return;
-  }
   ctx.effect(function () { return injectStyles(CSS); }, 'prompt-seed:styles');
   // 当前 DSH 中文界面下 locale 仍可能返回 en-US；用户明确要求中文按钮。
   const tr = makeT('zh');
-  const sessionApi = {
-    create: async function (request) {
-      const sessions = serviceOf(ctx, 'sessions');
-      if (sessions === undefined || typeof sessions.create !== 'function') throw new Error('sessions service unavailable');
-      return sessions.create(request);
-    },
-    open: function (id) {
-      const ui = serviceOf(ctx, 'uiWorkspace');
-      if (ui === undefined || typeof ui.openSession !== 'function') throw new Error('uiWorkspace service unavailable');
-      return ui.openSession(id);
-    },
-    rename: async function (id, title) {
-      const sessions = serviceOf(ctx, 'sessions');
-      if (sessions === undefined || typeof sessions.using !== 'function') return;
-      const result = await sessions.using(id, { source: 'prompt-seed' }, function (reference) {
-        return reference.binding.session.rename(title);
+
+  function mount(scope, sessionApi) {
+    const slots = scope.slots;
+    if (slots === undefined || typeof slots.inject !== 'function' || typeof slots.register !== 'function') {
+      console.warn('[prompt-seed] slots service unavailable; the button will not be mounted.');
+      return;
+    }
+    try {
+      slots.inject('conversation.input.right', function () {
+        return slots.register(
+          { name: 'conversation.input.right', id: 'prompt-seed', order: -10 },
+          function (props) { return React.createElement(OptimizeButton, Object.assign({}, props, { tr: tr, sessionApi: sessionApi })); },
+        );
       });
-      if (result && result.ok === false) throw new Error(result.error?.message || 'rename failed');
-    },
-  };
+    } catch (error) {
+      console.warn('[prompt-seed] could not mount into conversation.input.right.', error);
+    }
+  }
+
+  function makeSessionApi(sessions, uiWorkspace) {
+    return {
+      available: sessions !== undefined && sessions !== null && typeof sessions.create === 'function' &&
+        uiWorkspace !== undefined && uiWorkspace !== null && typeof uiWorkspace.openSession === 'function',
+      create: async function (request) {
+        if (sessions === undefined || typeof sessions.create !== 'function') throw new Error('sessions service unavailable');
+        return sessions.create(request);
+      },
+      open: function (id) {
+        if (uiWorkspace === undefined || typeof uiWorkspace.openSession !== 'function') throw new Error('uiWorkspace service unavailable');
+        return uiWorkspace.openSession(id);
+      },
+      rename: async function (id, title) {
+        if (sessions === undefined || typeof sessions.using !== 'function') return;
+        const result = await sessions.using(id, { source: 'prompt-seed' }, function (reference) {
+          return reference.binding.session.rename(title);
+        });
+        if (result && result.ok === false) throw new Error(result.error?.message || 'rename failed');
+      },
+    };
+  }
+
+  // DSH 客户端服务必须显式 inject；运行时 ctx.get('sessions') 在未声明依赖时拿不到。
   try {
-    slots.inject('conversation.input.right', function () {
-      return slots.register(
-        { name: 'conversation.input.right', id: 'prompt-seed', order: -10 },
-        function (props) { return React.createElement(OptimizeButton, Object.assign({}, props, { tr: tr, sessionApi: sessionApi })); },
-      );
+    ctx.inject(['slots', 'sessions', 'uiWorkspace'], function (scope) {
+      mount(scope, makeSessionApi(scope.sessions, scope.uiWorkspace));
     });
   } catch (error) {
-    console.warn('[prompt-seed] could not mount into conversation.input.right.', error);
+    console.warn('[prompt-seed] session services unavailable; falling back to direct optimize', error);
+    if (ctx.slots !== undefined) mount(ctx, makeSessionApi(undefined, undefined));
   }
 }

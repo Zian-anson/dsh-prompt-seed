@@ -111,3 +111,105 @@ test("jobs: explicit cancel is the only cancel", async () => {
   assert.equal(store.cancel(created.job.id).status, "cancelled");
   assert.equal(store.status({ sessionId: "s1" }).status, "cancelled");
 });
+test("host: duplicate click while running returns job_running, not an error", async () => {
+  function slowLlm() {
+    const seen = [];
+    return {
+      seen,
+      async *stream() {
+        seen.push(1);
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        yield { type: "text-delta", text: "确认更新并检查表现。" };
+        yield { type: "finish", reason: { kind: "stop" } };
+      },
+    };
+  }
+  const llm = slowLlm();
+  const { server, port, path } = await makeServer(llm);
+  try {
+    const body = { text: "现在应该已经更新了，你看看。", sessionId: "s-dup", stream: false };
+    const [first, second] = await Promise.all([post(port, path, body), post(port, path, body)]);
+    const firstFinal = JSON.parse(first.text);
+    const secondFinal = JSON.parse(second.text);
+    assert.equal(firstFinal.ok, true);
+    assert.equal(secondFinal.code, "job_running");
+    assert.equal(secondFinal.job.status, "running");
+  } finally { server.close(); }
+});
+
+test("host: empty-input prediction uses one call and fills draft text", async () => {
+  let registered;
+  const sessionQuery = {
+    async readSurface() {
+      return { events: [
+        { type: "user/message", data: { role: "user", content: "登录页校验做完了吗？" } },
+        { type: "assistant/message", data: { message: { role: "assistant", content: "校验已加，还差错误提示。要不要继续？" } } },
+      ] };
+    },
+  };
+  const llm = fakeLlm("好，继续补齐错误提示。");
+  const ctx = {
+    webServer: { register(route) { registered = route; return () => {}; } },
+    effect(fn) { fn(); },
+    get(name) {
+      if (name === "llm") return llm;
+      if (name === "sessionQuery") return sessionQuery;
+      if (name === "agentDefaultModel") return { currentSelection: () => ROUTE };
+      return undefined;
+    },
+  };
+  apply(ctx, { samples: false, templates: false, requestTimeoutMs: 1000 });
+  const server = http.createServer((req, res) => registered.handler(req, res));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const res = await post(server.address().port, registered.path, { action: "predict", sessionId: "s-predict" });
+    const data = JSON.parse(res.text);
+    assert.equal(data.ok, true);
+    assert.equal(data.text, "好，继续补齐错误提示。");
+    assert.equal(llm.seen.length, 1);
+    assert.equal(llm.seen[0].sessionId, "s-predict");
+  } finally { server.close(); }
+});
+
+test("host: explicit cancel leaves a terminal job and status survives", async () => {
+  function hangingLlm() {
+    return {
+      async *stream(request) {
+        if (typeof request.sessionId !== "string") {
+          yield { type: "finish", reason: { kind: "error", failure: { code: "MissingSessionID" } } };
+          return;
+        }
+        await new Promise(() => {});
+      },
+    };
+  }
+  let registered;
+  const llm = hangingLlm();
+  const ctx = {
+    webServer: { register(route) { registered = route; return () => {}; } },
+    effect(fn) { fn(); },
+    get(name) {
+      if (name === "llm") return llm;
+      if (name === "agentDefaultModel") return { currentSelection: () => ROUTE };
+      return undefined;
+    },
+  };
+  apply(ctx, { samples: false, templates: false, requestTimeoutMs: 5000 });
+  const server = http.createServer((req, res) => registered.handler(req, res));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = server.address().port;
+  try {
+    const start = post(port, registered.path, { text: "帮我做个登录页", sessionId: "s-cancel", stream: false });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const statusBefore = JSON.parse((await post(port, registered.path, { action: "status", sessionId: "s-cancel" })).text);
+    assert.equal(statusBefore.ok, true);
+    assert.equal(statusBefore.job.status, "running");
+    const cancel = JSON.parse((await post(port, registered.path, { action: "cancel", jobId: statusBefore.job.id })).text);
+    assert.equal(cancel.ok, true);
+    assert.equal(cancel.job.status, "cancelled");
+    const statusAfter = JSON.parse((await post(port, registered.path, { action: "status", sessionId: "s-cancel" })).text);
+    assert.equal(statusAfter.job.status, "cancelled");
+    await start;
+  } finally { server.close(); }
+});
+

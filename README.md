@@ -5,11 +5,11 @@
 [![CI](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml/badge.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Zian-anson/dsh-prompt-seed)](https://github.com/Zian-anson/dsh-prompt-seed/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![tests: 15 passing](https://img.shields.io/badge/tests-15%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 19 passing](https://img.shields.io/badge/tests-19%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
 A DeepSeek Harness composer plugin. Type a rough draft, click **✦**, and it is rewritten in place.
 
-**0.19.1 is a minimal optimizer.** Every non-passthrough input gets exactly one model call and
+**0.19.2 is a minimal optimizer.** Every non-passthrough input gets exactly one model call and
 one contract: rewrite the draft into a clearer version of the same message. Do not answer it, do
 not execute it, do not add requirements. Preserve intent, speech act, language, uncertainty and
 explicit paths/identifiers. There are no routes, shapes, ambiguity scores, target ratios, repair
@@ -58,13 +58,13 @@ Optimization is a **host-owned job**, not a component-local fetch.
 
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.19.1/dsh-prompt-seed-0.19.1.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.19.2/dsh-prompt-seed-0.19.2.tgz
 ```
 
 Or use the local tarball while developing:
 
 ```sh
-dsh plugin --profile <name> add ./dsh-prompt-seed-0.19.1.tgz
+dsh plugin --profile <name> add ./dsh-prompt-seed-0.19.2.tgz
 ```
 
 The button appears in the composer tool row. Remove it with
@@ -83,7 +83,7 @@ config:
   templates: true
 ```
 
-Removed in 0.19.1: `pipeline`, `depth`, `auditProvider`, `auditModel`, `deadlineMs`,
+Removed in 0.19.2: `pipeline`, `depth`, `auditProvider`, `auditModel`, `deadlineMs`,
 `rewriteReasoningEffort`, `predict`, `tasks`. Those features were either latency multipliers
 or unverifiable; they are recoverable from the v0.14.4 tag.
 
@@ -107,7 +107,7 @@ is no list-all-tasks endpoint.
 `stream:true` returns NDJSON:
 
 ```text
-{"type":"meta","route":"optimize","reasons":[],"promptVersion":"0.19.1"}
+{"type":"meta","route":"optimize","reasons":[],"promptVersion":"0.19.2"}
 {"type":"delta","text":"..."}
 {"type":"final","ok":true,"text":"...","route":"optimize","changed":true,"calls":1,"ttftMs":900,"ms":2600}
 ```
@@ -126,7 +126,7 @@ silently replaced on failure.
 ## Development
 
 ```sh
-npm test        # builds lib/, runs 15 tests, 13 real-socket checks, docs/install guards
+npm test        # builds lib/, runs 19 tests, 13 real-socket checks, docs/install guards
 npm run bench   # real-model benchmark on the default route
 ```
 

@@ -1,12 +1,12 @@
 /**
- * 0.19.1 单一改写契约：只改写，不回答、不执行、不审判。
+ * 0.19.2 单一改写契约：只改写，不回答、不执行、不审判。
  */
 
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const PROMPT_VERSION = "0.19.1";
+export const PROMPT_VERSION = "0.19.2";
 
 const BASE = [
   "Rewrite the user's message into a clearer version of the same message.",

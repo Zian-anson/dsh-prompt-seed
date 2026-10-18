@@ -9,6 +9,30 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.19.2] - 2026-10-18
+
+### Fixed
+
+- **First optimize in a new conversation failed before reaching the model.** The browser module
+  declared only the slots service, then tried to read sessions/uiWorkspace at runtime. DSH client
+  services must be declared statically and injected explicitly, so session creation could not see
+  them. The module now injects slots, sessions and uiWorkspace, and apply uses the injected scope.
+- **Session-service failures no longer block optimization.** If create/open is unavailable or
+  fails, the click falls back to optimizing the current draft directly instead of showing a dead
+  "failed" state.
+- **A successful create whose open did not navigate no longer hangs.** A 3s watchdog optimizes the
+  current draft directly.
+- **Reused components no longer stay locked after openSession.** sessionId changes reset the
+  creation lock; pending first-optimize text starts immediately even when the draft is already
+  equal to the restored text.
+- Repeated clicks in an already-created blank session optimize directly instead of creating another
+  session.
+
+### Tests
+
+- 19 tests: added real client service-injection coverage, duplicate-click job_running, empty-input
+  prediction, explicit cancel/status, and existing host/job scenarios.
+
 ## [0.19.1] - 2026-10-18
 
 ### Fixed

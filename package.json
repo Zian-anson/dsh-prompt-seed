@@ -1,6 +1,6 @@
 {
   "name": "dsh-prompt-seed",
-  "version": "0.19.1",
+  "version": "0.19.2",
   "description": "DSH composer plugin: one-call prompt rewrite; no routes, no semantic validation gates. First optimize creates a real session; jobs survive conversation switches.",
   "type": "module",
   "license": "MIT",

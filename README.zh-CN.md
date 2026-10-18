@@ -5,11 +5,11 @@
 [![CI](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml/badge.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Zian-anson/dsh-prompt-seed)](https://github.com/Zian-anson/dsh-prompt-seed/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![tests: 15 passing](https://img.shields.io/badge/tests-15%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 19 passing](https://img.shields.io/badge/tests-19%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
 DSH 输入框插件：写下粗糙草稿，点 **✦**，原地改写。
 
-**0.19.1 是最小优化器。** 所有非招呼输入只调用一次模型，只执行一个契约：把草稿改写成
+**0.19.2 是最小优化器。** 所有非招呼输入只调用一次模型，只执行一个契约：把草稿改写成
 同一条消息的更清楚版本。不回答、不执行、不新增要求；保留意图、言语行为、语言、确定性、
 路径和标识符。没有路由、没有 shape、没有 ambiguity、没有倍率、没有补救、没有语义校验门。
 
@@ -49,13 +49,13 @@ DSH 输入框插件：写下粗糙草稿，点 **✦**，原地改写。
 
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.19.1/dsh-prompt-seed-0.19.1.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.19.2/dsh-prompt-seed-0.19.2.tgz
 ```
 
 本地开发也可以用 tarball：
 
 ```sh
-dsh plugin --profile <name> add ./dsh-prompt-seed-0.19.1.tgz
+dsh plugin --profile <name> add ./dsh-prompt-seed-0.19.2.tgz
 ```
 
 按钮出现在输入框工具行。卸载：`dsh plugin --profile <name> remove dsh-prompt-seed`。
@@ -73,7 +73,7 @@ config:
   templates: true
 ```
 
-0.19.1 删除了 `pipeline`、`depth`、`auditProvider`、`auditModel`、`deadlineMs`、
+0.19.2 删除了 `pipeline`、`depth`、`auditProvider`、`auditModel`、`deadlineMs`、
 `rewriteReasoningEffort`、`predict`、`tasks`。这些功能要么是延迟放大器，要么无法验证；
 可从 v0.14.4 tag 回滚。
 
@@ -96,7 +96,7 @@ config:
 `stream:true` 返回 NDJSON：
 
 ```text
-{"type":"meta","route":"optimize","reasons":[],"promptVersion":"0.19.1"}
+{"type":"meta","route":"optimize","reasons":[],"promptVersion":"0.19.2"}
 {"type":"delta","text":"..."}
 {"type":"final","ok":true,"text":"...","route":"optimize","changed":true,"calls":1,"ttftMs":900,"ms":2600}
 ```
@@ -109,12 +109,12 @@ config:
 
 | 文件 | 内容 |
 |---|---|
-| `test/optimizer.test.mjs` | 15 项单元/契约/路由测试 |
+| `test/optimizer.test.mjs` | 19 项单元/契约/路由测试 |
 
 ## 开发
 
 ```sh
-npm test        # 构建 lib/，再跑 15 项测试、13 项真实 socket 检查、文档/安装守卫
+npm test        # 构建 lib/，再跑 19 项测试、13 项真实 socket 检查、文档/安装守卫
 npm run bench   # 默认生产路由的真实模型 benchmark
 ```
 
