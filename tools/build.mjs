@@ -90,11 +90,12 @@ async function main() {
   }
 
   const clientBody = await readFile(join(root, "src/client-plugin.js"), "utf8");
-  const clientBundle = wrapClientBundle(pkg.name, clientBody);
+  const clientCore = (await readFile(join(root, "src/client-core.js"), "utf8")).replace(/^export /gm, "");
+  const clientBundle = wrapClientBundle(pkg.name, clientCore + "\n" + clientBody);
   await writeFile(join(root, "lib/client.js"), clientBundle, "utf8");
 
   process.stdout.write(
-    `built lib/index.js + 8 host modules + lib/client.js (${clientBundle.length} bytes) for ${pkg.name}\n`,
+    `built lib/index.js + ${HOST_COPIES.length - 1} host modules + lib/client.js (${clientBundle.length} bytes) for ${pkg.name}\n`,
   );
 }
 

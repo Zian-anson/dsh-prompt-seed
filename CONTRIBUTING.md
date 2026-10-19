@@ -11,8 +11,8 @@ cd dsh-prompt-seed
 npm test        # builds lib/ from src/, then runs the test suite
 ```
 
-There are **no dependencies to install** — the package ships six host modules plus the plugin entry
-and one browser bundle, all using Node built-ins.
+There are **no dependencies to install** — the package ships the Host modules and a browser bundle,
+using Node built-ins and host-provided services.
 
 ## Ground rules
 
@@ -22,11 +22,12 @@ and one browser bundle, all using Node built-ins.
    caught by tests asserting on *effects* (what reached the model, what the rendered button looks
    like), not on internals. Several tests exist specifically because a previous refactor silently
    deleted a code path that the build and syntax check were happy with.
-3. **Deterministic gates stay deterministic.** Anything that decides *whether* to spend a model call
-   (content floor, precise-input detection, anchor preservation, structural-vs-semantic violation
-   classification) must be pure code with a test — not a model judgement.
-4. **A skipped check must not claim to have passed.** If the audit is short-circuited, the credential
-   says `unverified`; if a repair is accepted without re-auditing, `gate.rechecked` is `false`.
+3. **Deterministic guards stay deterministic.** Empty input, greetings, pure confirmations and
+   explicit-anchor checks use code and tests, not model judgements. Each generation makes at most
+   one model call, with no hidden retries, repair calls or semantic audit chain.
+4. **Verify behavior and the actual interface.** Drive input revisions, sessions, failures and
+   semantic references in tests. Record model information gain and distortion separately from
+   real DSH clicks; neither substitutes for the other. See `bench/README.md` and `docs/ACCEPTANCE.md`.
 5. **Failures must look like failures of the feature, never of the app.** The plugin never throws out
    of `apply`, never leaves a route behind on dispose, and never writes to the composer unless the
    write is safe.

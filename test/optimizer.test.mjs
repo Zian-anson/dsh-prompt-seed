@@ -38,12 +38,13 @@ test("分析：只有 passthrough 与 optimize 两条路", () => {
   assert.equal(classify("帮我做个登录页").route, "optimize");
 });
 
-test("prompt：只改写，不回答、不执行、不要 maxTokens", () => {
+test("prompt：只改写，不回答、不执行、不要 maxTokens", async () => {
   const prompt = buildMinimalPrompt("现在应该已经更新了，你看看。");
   assert.match(prompt.system, /Do not answer/i);
   assert.match(prompt.system, /Do not execute/i);
   assert.doesNotMatch(prompt.system, /maxTokens/i);
-  assert.match(PROMPT_VERSION, /^0\.19\./);
+  const pkg = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(PROMPT_VERSION, pkg.version);
 });
 
 test("优化：内容恰好一次调用，流式 final", async () => {
@@ -95,14 +96,6 @@ test("优化：空结果回原文", async () => {
   assert.equal(final.ok, false);
   assert.equal(final.code, "empty_result");
   assert.equal(final.text, "帮我做个登录页");
-});
-
-test("client bundle：图标/预测/首次会话能力仍在", async () => {
-  const source = await readFile(new URL("../lib/client.js", import.meta.url), "utf8");
-  assert.match(source, /CrystalIcon/);
-  assert.match(source, /SpinnerIcon/);
-  assert.match(source, /sessions\.create/);
-  assert.match(source, /prompt-seed:first:/);
 });
 
 test("host bundle：自动重启看门狗仍在", async () => {

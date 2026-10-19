@@ -1,86 +1,252 @@
 [
   {
-    "id": "ack",
-    "text": "好了",
-    "expect": "passthrough",
-    "category": "passthrough"
+    "id": "login",
+    "text": "帮我做个登录页",
+    "category": "task",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "补清输入、提交反馈和错误状态；不擅自加入注册、第三方登录或指定框架"
   },
   {
-    "id": "frustrated-status",
-    "text": "好了，就是不知道效果怎么样（彻底的失败）",
-    "expect": "optimize",
-    "category": "chat"
+    "id": "api",
+    "text": "加一个导出用户列表的接口",
+    "category": "task",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "说明复用现有权限和数据范围；不凭空指定格式、分页或新权限体系"
   },
   {
-    "id": "release-question",
+    "id": "bug",
+    "text": "登录之后偶尔白屏，查一下",
+    "category": "task",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "明确复现条件、错误证据和根因；不把查问题变成大重构"
+  },
+  {
+    "id": "refactor",
+    "text": "把设置页拆成几个组件",
+    "category": "task",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "按职责拆分、保持行为不变并检查关键交互"
+  },
+  {
+    "id": "upload",
+    "text": "给上传功能补测试",
+    "category": "task",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "覆盖现有成功、失败和关键边界，不凭空要求支持新文件类型"
+  },
+  {
+    "id": "docs",
+    "text": "写一下插件的安装说明",
+    "category": "task",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "前提、可执行安装步骤、成功验证和常见失败处理"
+  },
+  {
+    "id": "excel",
+    "text": "支持把报表导出成 Excel",
+    "category": "task",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "明确现有报表数据范围和导出失败反馈，不扩展导出格式"
+  },
+  {
+    "id": "deploy",
+    "text": "把这套服务部署到测试环境，不要动生产",
+    "category": "task",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "保留禁止生产；使用已有配置、部署后健康验证"
+  },
+  {
+    "id": "performance",
+    "text": "首页加载太慢了，优化一下",
+    "category": "task",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "定位瓶颈和前后对比，不能凭空设性能数字"
+  },
+  {
+    "id": "mobile",
+    "text": "适配一下手机端",
+    "category": "task",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "突出布局溢出和触控交互；不新增移动端功能"
+  },
+  {
+    "id": "release",
     "text": "现在是不是该发布了？",
-    "expect": "optimize",
-    "category": "question"
+    "category": "question",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "仍为判断问题，补充发布条件或阻塞风险，不能直接发布"
+  },
+  {
+    "id": "verify",
+    "text": "该怎样准确验证插件已经生效？",
+    "category": "question",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "区分安装、加载和实际行为；仍是询问验证方式"
+  },
+  {
+    "id": "slow",
+    "text": "为什么今天优化特别慢？",
+    "category": "question",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "保留原因询问，不编造供应商故障"
   },
   {
     "id": "feeling",
     "text": "我觉得效果不好",
-    "expect": "optimize",
-    "category": "statement"
+    "category": "statement",
+    "expectCalls": 1,
+    "improvable": false,
+    "criteria": "保留意见和不确定性；没有证据不能编造具体缺陷"
   },
   {
-    "id": "aside-question",
-    "text": "再检查一下，还有没有别的问题？（这次体验明显过慢）",
-    "expect": "optimize",
-    "category": "question"
+    "id": "rules",
+    "text": "这些校验规则太复杂了，根本没用",
+    "category": "statement",
+    "expectCalls": 1,
+    "improvable": false,
+    "criteria": "保留批评，不新增删除代码授权"
   },
   {
-    "id": "seed-login",
-    "text": "帮我做个登录页",
-    "expect": "optimize",
-    "category": "task"
+    "id": "restart",
+    "text": "以后你修改插件后直接重启，不要我提醒。",
+    "category": "meta",
+    "expectCalls": 1,
+    "improvable": false,
+    "criteria": "保留既有授权，不擅自增加发布或安装授权"
   },
   {
-    "id": "seed-noun",
-    "text": "登录",
-    "expect": "optimize",
-    "category": "task"
+    "id": "concise",
+    "text": "别再给我雷霆大扩展，简单说清楚就行。",
+    "category": "meta",
+    "expectCalls": 1,
+    "improvable": false,
+    "criteria": "准确要求允许不变，不能用套话扩写"
   },
   {
-    "id": "seed-debug",
-    "text": "我想要你帮我对这个项目的认知资产模块进行一个全面的Debug。",
-    "expect": "optimize",
-    "category": "task"
+    "id": "confirm",
+    "text": "可以，继续吧",
+    "category": "confirmation",
+    "expectCalls": 0,
+    "improvable": false,
+    "criteria": "纯确认零调用"
   },
   {
-    "id": "seed-debug-long",
-    "text": "我需要你帮我对这个项目的认知资产模块进行一个全面的Debug和优化。",
-    "expect": "optimize",
-    "category": "task"
+    "id": "delete",
+    "text": "删除 src/utils/legacy.js 里未被引用的 export，跑测试。",
+    "category": "precise",
+    "expectCalls": 1,
+    "improvable": false,
+    "criteria": "完整路径、export 和测试要求保留；允许不变"
   },
   {
-    "id": "meta-restart",
-    "text": "以后你每次修改自身插件后直接重启，不需要我再提醒。",
-    "expect": "optimize",
-    "category": "meta"
+    "id": "rename",
+    "text": "把 src/a.js 的 formatDate 改成 dayjs。",
+    "category": "precise",
+    "expectCalls": 1,
+    "improvable": false,
+    "criteria": "保留路径、标识符、明确技术选择；不创造其他迁移"
   },
   {
-    "id": "precise-delete",
-    "text": "删除 src/utils/legacy.js 里未被引用的 export，跑一遍测试确认没破坏",
-    "expect": "optimize",
-    "category": "precise"
+    "id": "url",
+    "text": "检查 https://example.com/api/health 返回 500 的原因。",
+    "category": "precise",
+    "expectCalls": 1,
+    "improvable": false,
+    "criteria": "保留完整 URL、500 和调查边界"
   },
   {
-    "id": "precise-edit",
-    "text": "把 src/a.js 的 formatDate 改成 dayjs",
-    "expect": "optimize",
-    "category": "precise"
+    "id": "long",
+    "text": "我想说的是，空白会话里先写了好多东西，点优化然后切到另一个会话，回来草稿有时就不见了。我不想每次都重新写，也不想它替我自动发送。先跟我讨论产品怎么处理，不要改代码。最好说一下你推荐什么，还有这么选的理由。",
+    "category": "long",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "压缩重复表达；保留丢稿、切换、不自动发送、只讨论和推荐理由"
   },
   {
-    "id": "english-seed",
-    "text": "make the dashboard faster",
-    "expect": "optimize",
-    "category": "task"
-  },
-  {
-    "id": "context-anaphora",
+    "id": "context",
     "text": "那把这个再改一下，保留刚才的接口。",
-    "expect": "optimize",
-    "category": "context"
+    "category": "context",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "解析为 CSV 导出，保留已定路径及权限，不改成 Excel",
+    "context": [
+      {
+        "role": "user",
+        "text": "CSV 导出复用 /api/export，沿用现有鉴权。只改导出，不加 Excel。"
+      },
+      {
+        "role": "assistant",
+        "text": "当前 CSV 导出的错误处理不一致，我建议统一失败响应，保持 /api/export 不变。"
+      }
+    ]
+  },
+  {
+    "id": "english",
+    "text": "make the dashboard load faster",
+    "category": "english",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "English; measure bottlenecks and compare, do not invent thresholds"
+  },
+  {
+    "id": "en-question",
+    "text": "why does the optimizer sometimes time out?",
+    "category": "english",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "English question, no invented diagnosis or implementation authorization"
+  },
+  {
+    "id": "security",
+    "text": "帮我看看登录接口有没有安全问题，只检查，先别修改",
+    "category": "assessment",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "明确只检查，证据与风险；不自动修改"
+  },
+  {
+    "id": "a11y",
+    "text": "让这个表单对键盘用户更友好",
+    "category": "task",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "键盘路径、焦点、标签；不扩大到全站重构"
+  },
+  {
+    "id": "errors",
+    "text": "统一一下接口的错误处理",
+    "category": "task",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "现有错误约定、调用方兼容、失败路径验证"
+  },
+  {
+    "id": "cli",
+    "text": "写个命令行工具批量重命名文件",
+    "category": "task",
+    "expectCalls": 1,
+    "improvable": true,
+    "criteria": "输入范围、重命名规则、冲突保护；不指定语言或破坏性覆盖"
+  },
+  {
+    "id": "numbers",
+    "text": "只讨论：30 个样本里至少 80% 要有实质改善，p50 不超过 3 秒，p95 不超过 8 秒。不接受单纯换同义词。",
+    "category": "precise",
+    "expectCalls": 1,
+    "improvable": false,
+    "criteria": "保留数字、单位、否定要求、只讨论边界，准确原文可不变"
   }
 ]

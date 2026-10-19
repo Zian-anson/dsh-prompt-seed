@@ -23,12 +23,13 @@ function fakeLlm(output) {
   };
 }
 
-async function makeServer(llm) {
+async function makeServer(llm, sessionQuery) {
   let registered;
   const ctx = {
     webServer: { register(route) { registered = route; return () => {}; } },
     effect(fn) { fn(); },
     get(name) {
+      if (name === "sessionQuery" && sessionQuery) return sessionQuery;
       if (name === "llm") return llm;
       if (name === "agentDefaultModel") return { currentSelection: () => ROUTE };
       return undefined;
@@ -213,3 +214,44 @@ test("host: explicit cancel leaves a terminal job and status survives", async ()
   } finally { server.close(); }
 });
 
+
+test('host: streaming prediction participates in kind-scoped status without changing legacy JSON', async () => {
+  const context = { readSurface: async () => ({ events: [
+    { type: 'user/message', seq: 7, data: { content: '先讨论原因', source: { kind: 'user' } } },
+    { type: 'assistant/message', seq: 8, data: { message: { role: 'assistant', content: '可能是两个原因。' } } },
+  ] }) };
+  const llm = fakeLlm('分别解释一下这两个原因。'); const { server, port, path } = await makeServer(llm, context);
+  try {
+    const stream = await post(port, path, { action: 'predict', stream: true, sessionId: 's' });
+    const events = stream.text.trim().split('\n').map(JSON.parse);
+    assert.equal(events[0].kind, 'predict'); assert.ok(events.some((e) => e.type === 'delta')); assert.equal(events.at(-1).calls, 1);
+    const normal = JSON.parse((await post(port, path, { action: 'status', sessionId: 's' })).text);
+    assert.equal(normal.job, null); assert.equal(normal.lastUserMessageId, 's:7'); assert.equal(normal.hasAssistant, true);
+    const prediction = JSON.parse((await post(port, path, { action: 'status', kind: 'predict', sessionId: 's' })).text);
+    assert.equal(prediction.job.kind, 'predict');
+    const wrong = JSON.parse((await post(port, path, { action: 'consume', kind: 'optimize', jobId: prediction.job.id })).text);
+    assert.equal(wrong.ok, false);
+    const legacy = JSON.parse((await post(port, path, { action: 'predict', sessionId: 's' })).text);
+    assert.deepEqual(legacy, { ok: true, text: '分别解释一下这两个原因。' });
+  } finally { server.close(); }
+});
+
+test('host: client stream disconnect leaves prediction running until explicit cancellation', async () => {
+  let seenSignal;
+  const llm = { async *stream(request) { seenSignal = request.signal; yield { type: 'text-delta', text: '正在想' }; await new Promise(() => {}); } };
+  const context = { readSurface: async () => ({ events: [{ type: 'assistant/message', data: { message: { role: 'assistant', content: '要继续讨论吗？' } } }] }) };
+  const { server, port, path } = await makeServer(llm, context);
+  try {
+    await new Promise((resolve, reject) => {
+      const data = JSON.stringify({ action: 'predict', stream: true, sessionId: 's' });
+      const request = http.request({ host: '127.0.0.1', port, path, method: 'POST', headers: { 'content-type': 'application/json' } }, (response) => {
+        response.once('data', () => { response.destroy(); resolve(); });
+      }); request.on('error', reject); request.end(data);
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    const state = JSON.parse((await post(port, path, { action: 'status', kind: 'predict', sessionId: 's' })).text);
+    assert.equal(state.job.status, 'running'); assert.equal(seenSignal.aborted, false);
+    await post(port, path, { action: 'cancel', kind: 'predict', jobId: state.job.id });
+    assert.equal(seenSignal.aborted, true);
+  } finally { server.close(); }
+});

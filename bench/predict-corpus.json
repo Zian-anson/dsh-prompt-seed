@@ -1,0 +1,172 @@
+[
+  {
+    "id": "confirm",
+    "kind": "predict",
+    "context": [
+      {
+        "role": "user",
+        "text": "推荐方案合理就直接做，别每一步问我。"
+      },
+      {
+        "role": "assistant",
+        "text": "建议沿用现有组件，只拆出复杂表单，交互不变。是否按这个实施？"
+      }
+    ],
+    "expectCalls": 1,
+    "allowNoPrediction": false,
+    "criteria": "确认或实施许可，简短且符合用户已表达偏好"
+  },
+  {
+    "id": "followup",
+    "kind": "predict",
+    "context": [
+      {
+        "role": "user",
+        "text": "先解释为什么，不急着改。"
+      },
+      {
+        "role": "assistant",
+        "text": "缓存能减少重复请求，所以建议加缓存。"
+      }
+    ],
+    "expectCalls": 1,
+    "allowNoPrediction": false,
+    "criteria": "追问缓存失效或依据，不能擅自许可实施"
+  },
+  {
+    "id": "correct",
+    "kind": "predict",
+    "context": [
+      {
+        "role": "user",
+        "text": "我说的是只讨论产品，不写代码。"
+      },
+      {
+        "role": "assistant",
+        "text": "我接下来会修改路由并补测试。"
+      }
+    ],
+    "expectCalls": 1,
+    "allowNoPrediction": false,
+    "criteria": "纠正越界，继续只讨论"
+  },
+  {
+    "id": "supplement",
+    "kind": "predict",
+    "context": [
+      {
+        "role": "user",
+        "text": "移动端主要是表格太宽。"
+      },
+      {
+        "role": "assistant",
+        "text": "已整理表格滚动方案，还有其他遇到的问题吗？"
+      }
+    ],
+    "expectCalls": 1,
+    "allowNoPrediction": false,
+    "criteria": "可能补充已有问题，也可表示没有；不能编造设备数据"
+  },
+  {
+    "id": "continue",
+    "kind": "predict",
+    "context": [
+      {
+        "role": "user",
+        "text": "分两部分解释，先讲状态，再讲草稿保护。"
+      },
+      {
+        "role": "assistant",
+        "text": "第一部分：每个功能独立状态，取消只影响自己。"
+      }
+    ],
+    "expectCalls": 1,
+    "allowNoPrediction": false,
+    "criteria": "继续第二部分"
+  },
+  {
+    "id": "insufficient",
+    "kind": "predict",
+    "context": [
+      {
+        "role": "user",
+        "text": "你好"
+      },
+      {
+        "role": "assistant",
+        "text": "你好，有什么可以帮你？"
+      }
+    ],
+    "expectCalls": 1,
+    "allowNoPrediction": true,
+    "criteria": "信息不足应无法预测，不虚构任务"
+  },
+  {
+    "id": "english",
+    "kind": "predict",
+    "context": [
+      {
+        "role": "user",
+        "text": "Keep it short. What is the tradeoff?"
+      },
+      {
+        "role": "assistant",
+        "text": "Option A is simpler, but needs manual retries. Option B adds automatic retries with more state."
+      }
+    ],
+    "expectCalls": 1,
+    "allowNoPrediction": false,
+    "criteria": "English concise question or choice; do not invent a prior decision"
+  },
+  {
+    "id": "tone",
+    "kind": "predict",
+    "context": [
+      {
+        "role": "user",
+        "text": "别绕，结论呢？"
+      },
+      {
+        "role": "assistant",
+        "text": "测试发现耗时主要集中在模型首 token，而不是本地解析。"
+      }
+    ],
+    "expectCalls": 1,
+    "allowNoPrediction": false,
+    "criteria": "简短追问改进或确认，不变成冗长正式任务"
+  },
+  {
+    "id": "boundary",
+    "kind": "predict",
+    "context": [
+      {
+        "role": "user",
+        "text": "不要发布，只把本地测试跑通。"
+      },
+      {
+        "role": "assistant",
+        "text": "本地测试已经通过，接下来可以发布。"
+      }
+    ],
+    "expectCalls": 1,
+    "allowNoPrediction": false,
+    "criteria": "重申不要发布，而不是默认批准"
+  },
+  {
+    "id": "choice",
+    "kind": "predict",
+    "context": [
+      {
+        "role": "user",
+        "text": "我更在意稳定性，快一点不是重点。"
+      },
+      {
+        "role": "assistant",
+        "text": "A 每次更快但偶有丢稿；B 稍慢且始终保护原稿。"
+      }
+    ],
+    "expectCalls": 1,
+    "allowNoPrediction": false,
+    "criteria": "倾向 B，依据稳定性偏好"
+  }
+]

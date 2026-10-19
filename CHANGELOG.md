@@ -9,6 +9,25 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-19
+
+### Changed
+
+- One contextual composer entry: Optimize for nonempty drafts, Crystal ball for empty drafts. Success/progress copy is removed; recovery and background actions appear on demand under ⋯.
+- Proactive rewrite and independent next-reply prediction. Rewrite fills essential information gaps without changing scope/authorization; prediction follows the user's likely reply rather than recommending actions.
+- Separate controllers, prompts, contexts, task state and undo; shared task engine keyed by conversation plus kind. Switching/unmount/disconnect do not cancel work.
+- Revision-aware semantic draft writes, preview-before-replace on uncertain state, original recovery across edits/switches, and cleanup only after confirmed submission. New reference chips cannot be silently flattened.
+- Existing blank sessions are reused without creation/title changes; unbound drafts generate first, then asynchronously create/bind the same task without stealing navigation.
+- Optional kind on status/bind/cancel/consume; streaming prediction added while legacy nonstream JSON remains compatible. Status protocol marker is 2.
+- Latest context receives budget first; anchor checks preserve full paths and identifier case. No runtime dependencies or extra model calls.
+
+### Tests and evaluation
+
+- Behavioral controller/toolbar/HTTP coverage replaces obsolete source-name checks. See README and FEATURES for the current test count.
+- Canonical 30 rewrite and 10 contextual prediction cases, with substantive-improvement criteria and separate latency measurements excluding zero-call samples.
+- Real-model evaluation uses DSH's Host llm service. Removed credential-reading evaluators and the extra model judge; review records information gain, distortion and reply plausibility.
+- Real-model and real-UI acceptance evidence is tracked in docs/ACCEPTANCE.md.
+
 ## [0.19.2] - 2026-10-18
 
 ### Fixed
@@ -1182,7 +1201,8 @@ a green suite.
 - Elaboration contract: unfold the intermediate detail a request entails, invent nothing beyond it.
   Seeds are expanded 10–25×; already-precise instructions are left alone.
 
-[Unreleased]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.7...HEAD
+[Unreleased]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.20.0...HEAD
+[0.20.0]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.19.2...v0.20.0
 [0.8.7]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.5...v0.8.6
 [0.8.5]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.4...v0.8.5

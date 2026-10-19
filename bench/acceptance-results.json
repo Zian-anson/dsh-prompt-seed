@@ -1,0 +1,1007 @@
+{
+  "route": {
+    "provider": "deepseek-official",
+    "model": "deepseek-flash",
+    "reasoningEffort": "high"
+  },
+  "templates": [],
+  "rows": [
+    {
+      "id": "login",
+      "text": "帮我做个登录页",
+      "category": "task",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "补清输入、提交反馈和错误状态；不擅自加入注册、第三方登录或指定框架",
+      "kind": "optimize",
+      "output": "帮我做一个登录页：包含账号/密码输入、空值校验和登录失败提示。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1375,
+      "ttftMs": 1315,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "补账号/密码输入、空值校验与失败提示",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "api",
+      "text": "加一个导出用户列表的接口",
+      "category": "task",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "说明复用现有权限和数据范围；不凭空指定格式、分页或新权限体系",
+      "kind": "optimize",
+      "output": "在现有用户相关路由中新增一个导出用户列表的接口，实现方式沿用项目已有的接口、权限校验和文件导出约定。导出内容与现有用户列表接口一致，字段和筛选条件也保持一致；导出文件的格式沿用项目现有的导出约定。完成后实际调用该接口，确认能正常返回文件、内容与用户列表数据一致，并确认未登录或无权限的请求会被拒绝。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 2364,
+      "ttftMs": 1911,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "复用现有字段、筛选、权限和导出约定，并说明调用验证",
+        "distortion": "假设项目存在导出约定；无约定时执行方仍需合理判断"
+      }
+    },
+    {
+      "id": "bug",
+      "text": "登录之后偶尔白屏，查一下",
+      "category": "task",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "明确复现条件、错误证据和根因；不把查问题变成大重构",
+      "kind": "optimize",
+      "output": "登录之后偶尔会出现白屏。请查一下：确认它在什么条件下出现、大概怎么复现，并定位出问题在哪个环节（例如登录后的页面渲染、接口返回数据，或路由和状态处理），说明原因和修复方向。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 3337,
+      "ttftMs": 3171,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "复现条件、出错环节和修复方向",
+        "distortion": "调查边界保持"
+      }
+    },
+    {
+      "id": "refactor",
+      "text": "把设置页拆成几个组件",
+      "category": "task",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "按职责拆分、保持行为不变并检查关键交互",
+      "kind": "optimize",
+      "output": "把设置页拆成几个职责清晰的组件，按现有项目结构和组件规范拆分，保持现有功能和界面行为不变；完成后运行现有测试或检查，确认设置页仍能正常使用。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1915,
+      "ttftMs": 1822,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "职责拆分、现有规范、行为保持及验证",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "upload",
+      "text": "给上传功能补测试",
+      "category": "task",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "覆盖现有成功、失败和关键边界，不凭空要求支持新文件类型",
+      "kind": "optimize",
+      "output": "给上传功能补充测试，覆盖正常上传、上传失败和关键边界情况；沿用项目现有测试框架，并运行确认这些测试能够正常通过。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1467,
+      "ttftMs": 1372,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "成功/失败/边界覆盖及沿用现有测试框架",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "docs",
+      "text": "写一下插件的安装说明",
+      "category": "task",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "前提、可执行安装步骤、成功验证和常见失败处理",
+      "kind": "optimize",
+      "output": "写一下插件的安装说明：按项目现有文档格式，说明安装前提、具体安装步骤和安装完成后的验证方式，确保读者能照着完成安装。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 2121,
+      "ttftMs": 1971,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "安装前提、步骤、验证与现有文档格式",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "excel",
+      "text": "支持把报表导出成 Excel",
+      "category": "task",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "明确现有报表数据范围和导出失败反馈，不扩展导出格式",
+      "kind": "optimize",
+      "output": "请让报表支持导出为 Excel：按当前报表展示的数据范围导出，生成可正常打开的 Excel 文件，并核对表头、关键字段和数据行是否完整；不要改动报表的其他功能。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 2916,
+      "ttftMs": 2782,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "当前数据范围、文件可打开、字段/行完整性",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "deploy",
+      "text": "把这套服务部署到测试环境，不要动生产",
+      "category": "task",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "保留禁止生产；使用已有配置、部署后健康验证",
+      "kind": "optimize",
+      "output": "把这套服务部署到测试环境，部署后确认各服务能正常启动、基础健康检查通过。全程不要改动生产环境，也不要做任何会影响生产配置或数据的操作。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1626,
+      "ttftMs": 1442,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "启动、健康检查和生产配置/数据保护",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "performance",
+      "text": "首页加载太慢了，优化一下",
+      "category": "task",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "定位瓶颈和前后对比，不能凭空设性能数字",
+      "kind": "optimize",
+      "output": "找出首页加载慢的主要原因并优化，对比修改前后的加载表现，确认有实际改善。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1071,
+      "ttftMs": 1009,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "瓶颈定位和优化前后对比",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "mobile",
+      "text": "适配一下手机端",
+      "category": "task",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "突出布局溢出和触控交互；不新增移动端功能",
+      "kind": "optimize",
+      "output": "请把当前界面适配到手机端：沿用现有设计和技术栈，检查窄屏下的布局、文字换行、内容溢出和按钮可点击区域，确保主要功能在手机上能正常使用，并尽量不改变桌面端现有表现。完成后用常见手机宽度验证，确认没有横向滚动、内容遮挡或关键操作不可用的问题。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 2972,
+      "ttftMs": 2733,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "窄屏溢出、点击区域、关键操作与桌面保持",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "release",
+      "text": "现在是不是该发布了？",
+      "category": "question",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "仍为判断问题，补充发布条件或阻塞风险，不能直接发布",
+      "kind": "optimize",
+      "output": "结合目前的完成情况和已知问题，现在适合发布吗？还有哪些发布前必须解决的问题？",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1307,
+      "ttftMs": 1236,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "将发布判断落到完成情况、已知问题和阻塞项",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "verify",
+      "text": "该怎样准确验证插件已经生效？",
+      "category": "question",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "区分安装、加载和实际行为；仍是询问验证方式",
+      "kind": "optimize",
+      "output": "该怎样准确验证插件已经生效？请说明可检查的具体迹象或验证步骤。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1725,
+      "ttftMs": 1679,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "要求具体可检查迹象和验证步骤",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "slow",
+      "text": "为什么今天优化特别慢？",
+      "category": "question",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "保留原因询问，不编造供应商故障",
+      "kind": "optimize",
+      "output": "为什么今天优化特别慢？具体是哪类优化、慢在哪个环节，以及慢的表现是什么？",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 2612,
+      "ttftMs": 2549,
+      "anchorOk": true,
+      "review": {
+        "verdict": "worse",
+        "informationGain": "",
+        "distortion": "将原因问题部分改成向对方追问“哪类优化/慢的表现”，说话方向仍不够稳"
+      }
+    },
+    {
+      "id": "feeling",
+      "text": "我觉得效果不好",
+      "category": "statement",
+      "expectCalls": 1,
+      "improvable": false,
+      "criteria": "保留意见和不确定性；没有证据不能编造具体缺陷",
+      "kind": "optimize",
+      "output": "我觉得效果不好",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1281,
+      "ttftMs": 1241,
+      "anchorOk": true,
+      "review": {
+        "verdict": "same",
+        "informationGain": "",
+        "distortion": "没有凭空为抱怨编造对象或原因，保持原文合理"
+      }
+    },
+    {
+      "id": "rules",
+      "text": "这些校验规则太复杂了，根本没用",
+      "category": "statement",
+      "expectCalls": 1,
+      "improvable": false,
+      "criteria": "保留批评，不新增删除代码授权",
+      "kind": "optimize",
+      "output": "这些校验规则太复杂，实际使用中根本没什么用。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 2110,
+      "ttftMs": 2069,
+      "anchorOk": true,
+      "review": {
+        "verdict": "same",
+        "informationGain": "",
+        "distortion": "只是同义表述，不算信息增益"
+      }
+    },
+    {
+      "id": "restart",
+      "text": "以后你修改插件后直接重启，不要我提醒。",
+      "category": "meta",
+      "expectCalls": 1,
+      "improvable": false,
+      "criteria": "保留既有授权，不擅自增加发布或安装授权",
+      "kind": "optimize",
+      "output": "以后你修改插件后，直接重启插件，不需要我再提醒。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1356,
+      "ttftMs": 1329,
+      "anchorOk": true,
+      "review": {
+        "verdict": "same",
+        "informationGain": "",
+        "distortion": "语义近似；“重启”收窄成“重启插件”，原文目标未明确时有轻微解释性收窄"
+      }
+    },
+    {
+      "id": "concise",
+      "text": "别再给我雷霆大扩展，简单说清楚就行。",
+      "category": "meta",
+      "expectCalls": 1,
+      "improvable": false,
+      "criteria": "准确要求允许不变，不能用套话扩写",
+      "kind": "optimize",
+      "output": "不要再给我“雷霆大扩展”式的大段展开，简单、清楚地说明重点就行。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 2175,
+      "ttftMs": 2118,
+      "anchorOk": true,
+      "review": {
+        "verdict": "same",
+        "informationGain": "",
+        "distortion": "只整理措辞，不算实质改善"
+      }
+    },
+    {
+      "id": "confirm",
+      "text": "可以，继续吧",
+      "category": "confirmation",
+      "expectCalls": 0,
+      "improvable": false,
+      "criteria": "纯确认零调用",
+      "kind": "optimize",
+      "output": "可以，继续吧",
+      "ok": false,
+      "code": "nothing_to_optimize",
+      "reason": "ack_or_greeting",
+      "calls": 0,
+      "ms": 0,
+      "ttftMs": 0,
+      "anchorOk": true,
+      "review": {
+        "verdict": "same",
+        "informationGain": "",
+        "distortion": "纯确认零调用符合契约"
+      }
+    },
+    {
+      "id": "delete",
+      "text": "删除 src/utils/legacy.js 里未被引用的 export，跑测试。",
+      "category": "precise",
+      "expectCalls": 1,
+      "improvable": false,
+      "criteria": "完整路径、export 和测试要求保留；允许不变",
+      "kind": "optimize",
+      "output": "删除 src/utils/legacy.js 里未被引用的 export，然后跑现有测试，确认删除后测试仍能通过。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1616,
+      "ttftMs": 1538,
+      "anchorOk": true,
+      "review": {
+        "verdict": "same",
+        "informationGain": "",
+        "distortion": "原指令已准确，验证通过只是原有跑测试的解释"
+      }
+    },
+    {
+      "id": "rename",
+      "text": "把 src/a.js 的 formatDate 改成 dayjs。",
+      "category": "precise",
+      "expectCalls": 1,
+      "improvable": false,
+      "criteria": "保留路径、标识符、明确技术选择；不创造其他迁移",
+      "kind": "optimize",
+      "output": "把 src/a.js 中的 formatDate 改为使用 dayjs 实现，保持函数名和原有调用方式不变。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1421,
+      "ttftMs": 1349,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "补函数名和调用方式保持",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "url",
+      "text": "检查 https://example.com/api/health 返回 500 的原因。",
+      "category": "precise",
+      "expectCalls": 1,
+      "improvable": false,
+      "criteria": "保留完整 URL、500 和调查边界",
+      "kind": "optimize",
+      "output": "检查 https://example.com/api/health 返回 500 的原因，并说明具体故障点和判断依据。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 2417,
+      "ttftMs": 2376,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "补故障点与判断依据",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "long",
+      "text": "我想说的是，空白会话里先写了好多东西，点优化然后切到另一个会话，回来草稿有时就不见了。我不想每次都重新写，也不想它替我自动发送。先跟我讨论产品怎么处理，不要改代码。最好说一下你推荐什么，还有这么选的理由。",
+      "category": "long",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "压缩重复表达；保留丢稿、切换、不自动发送、只讨论和推荐理由",
+      "kind": "optimize",
+      "output": "我在空白会话里写了不少内容，点“优化”后切到另一个会话，再回来时草稿有时会丢失。我不想每次都重写，也不希望它替我自动发送。先讨论产品上应该怎么处理，不要改代码；请说明你推荐的方案和理由，以及草稿在切换会话、点“优化”这些场景下应如何保存和恢复。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 3438,
+      "ttftMs": 3148,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "压缩口述，保留丢稿场景、不自动发送、只讨论和推荐理由",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "context",
+      "text": "那把这个再改一下，保留刚才的接口。",
+      "category": "context",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "解析为 CSV 导出，保留已定路径及权限，不改成 Excel",
+      "context": [
+        {
+          "role": "user",
+          "text": "CSV 导出复用 /api/export，沿用现有鉴权。只改导出，不加 Excel。"
+        },
+        {
+          "role": "assistant",
+          "text": "当前 CSV 导出的错误处理不一致，我建议统一失败响应，保持 /api/export 不变。"
+        }
+      ],
+      "kind": "optimize",
+      "output": "那请把 CSV 导出的错误处理再改一下，统一失败响应；保留刚才的 /api/export 接口不变，沿用现有鉴权，只改导出，不加 Excel。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 2798,
+      "ttftMs": 2702,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "解开指代：CSV 错误处理；带回 /api/export、鉴权和禁止 Excel",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "english",
+      "text": "make the dashboard load faster",
+      "category": "english",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "English; measure bottlenecks and compare, do not invent thresholds",
+      "kind": "optimize",
+      "output": "Find the main bottlenecks causing the dashboard to load slowly, optimize them, and compare load performance before and after to confirm there is an actual improvement.",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1514,
+      "ttftMs": 1438,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "瓶颈、改进与前后对比，保持英文",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "en-question",
+      "text": "why does the optimizer sometimes time out?",
+      "category": "english",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "English question, no invented diagnosis or implementation authorization",
+      "kind": "optimize",
+      "output": "Why does the optimizer sometimes time out, and under what conditions is this more likely?",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 999,
+      "ttftMs": 926,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "补触发条件，保留英文原因询问",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "security",
+      "text": "帮我看看登录接口有没有安全问题，只检查，先别修改",
+      "category": "assessment",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "明确只检查，证据与风险；不自动修改",
+      "kind": "optimize",
+      "output": "帮我检查登录接口有没有安全问题；只做检查和说明，先不要修改代码。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 970,
+      "ttftMs": 873,
+      "anchorOk": true,
+      "review": {
+        "verdict": "same",
+        "informationGain": "",
+        "distortion": "与原文重复，没有具体信息增益"
+      }
+    },
+    {
+      "id": "a11y",
+      "text": "让这个表单对键盘用户更友好",
+      "category": "task",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "键盘路径、焦点、标签；不扩大到全站重构",
+      "kind": "optimize",
+      "output": "请让这个表单对键盘用户更友好：确保所有可交互控件都能按合理的 Tab/Shift+Tab 顺序访问，焦点状态清晰可见，标签、必填项和错误提示都能被键盘用户获知；用键盘完整走一遍填写、提交和纠错流程，确认无需鼠标即可完成。不要改动与键盘可访问性无关的视觉样式或业务逻辑。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 2492,
+      "ttftMs": 2194,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "Tab 顺序、焦点、标签/报错及键盘全流程验证",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "errors",
+      "text": "统一一下接口的错误处理",
+      "category": "task",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "现有错误约定、调用方兼容、失败路径验证",
+      "kind": "optimize",
+      "output": "统一现有接口的错误处理：先梳理各接口当前的错误返回格式和处理方式，确定一套一致的约定并应用到相关接口；不要改动业务逻辑和成功响应。完成后检查有代表性的错误场景，确认返回格式和处理行为一致。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 2380,
+      "ttftMs": 2118,
+      "anchorOk": true,
+      "review": {
+        "verdict": "better",
+        "informationGain": "统一现有约定、成功响应/业务逻辑保护、错误场景验证",
+        "distortion": ""
+      }
+    },
+    {
+      "id": "cli",
+      "text": "写个命令行工具批量重命名文件",
+      "category": "task",
+      "expectCalls": 1,
+      "improvable": true,
+      "criteria": "输入范围、重命名规则、冲突保护；不指定语言或破坏性覆盖",
+      "kind": "optimize",
+      "output": "写一个命令行工具，按命令行参数指定的目录、文件名匹配规则和新名称规则批量重命名文件。默认只处理指定目录下的文件，不递归；重命名前先列出将要发生的改动供确认，遇到目标名称已存在时跳过并报告，不覆盖原文件。实现后用临时目录构造包含正常匹配、无匹配和重名冲突的测试文件验证结果。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 3914,
+      "ttftMs": 3625,
+      "anchorOk": true,
+      "review": {
+        "verdict": "worse",
+        "informationGain": "加入冲突保护和临时目录验证",
+        "distortion": "默认不递归、冲突跳过和固定确认流程是未确定的产品选择，补充过细"
+      }
+    },
+    {
+      "id": "numbers",
+      "text": "只讨论：30 个样本里至少 80% 要有实质改善，p50 不超过 3 秒，p95 不超过 8 秒。不接受单纯换同义词。",
+      "category": "precise",
+      "expectCalls": 1,
+      "improvable": false,
+      "criteria": "保留数字、单位、否定要求、只讨论边界，准确原文可不变",
+      "kind": "optimize",
+      "output": "只讨论验收标准，暂不实施：30 个样本里至少 80% 要有实质改善，p50 不超过 3 秒，p95 不超过 8 秒；单纯替换同义词不算实质改善，不接受。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 2687,
+      "ttftMs": 2552,
+      "anchorOk": true,
+      "review": {
+        "verdict": "same",
+        "informationGain": "",
+        "distortion": "数字、单位、只讨论与否定标准保留，主要为整理措辞"
+      }
+    },
+    {
+      "id": "confirm",
+      "kind": "predict",
+      "context": [
+        {
+          "role": "user",
+          "text": "推荐方案合理就直接做，别每一步问我。"
+        },
+        {
+          "role": "assistant",
+          "text": "建议沿用现有组件，只拆出复杂表单，交互不变。是否按这个实施？"
+        }
+      ],
+      "expectCalls": 1,
+      "allowNoPrediction": false,
+      "criteria": "确认或实施许可，简短且符合用户已表达偏好",
+      "output": "按这个做，别再问了。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 935,
+      "ttftMs": 902,
+      "anchorOk": true,
+      "review": {
+        "plausibleReply": true,
+        "appropriateAbstention": false,
+        "note": "符合用户“合理就做、不要反复问”的口吻。"
+      }
+    },
+    {
+      "id": "followup",
+      "kind": "predict",
+      "context": [
+        {
+          "role": "user",
+          "text": "先解释为什么，不急着改。"
+        },
+        {
+          "role": "assistant",
+          "text": "缓存能减少重复请求，所以建议加缓存。"
+        }
+      ],
+      "expectCalls": 1,
+      "allowNoPrediction": false,
+      "criteria": "追问缓存失效或依据，不能擅自许可实施",
+      "output": "具体是哪些请求会重复，为什么会重复？",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1454,
+      "ttftMs": 1420,
+      "anchorOk": true,
+      "review": {
+        "plausibleReply": true,
+        "appropriateAbstention": false,
+        "note": "追问重复请求的证据，延续先解释不实施。"
+      }
+    },
+    {
+      "id": "correct",
+      "kind": "predict",
+      "context": [
+        {
+          "role": "user",
+          "text": "我说的是只讨论产品，不写代码。"
+        },
+        {
+          "role": "assistant",
+          "text": "我接下来会修改路由并补测试。"
+        }
+      ],
+      "expectCalls": 1,
+      "allowNoPrediction": false,
+      "criteria": "纠正越界，继续只讨论",
+      "output": "你又在写代码了——先只讨论产品，不要提实现和测试。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1034,
+      "ttftMs": 897,
+      "anchorOk": true,
+      "review": {
+        "plausibleReply": true,
+        "appropriateAbstention": false,
+        "note": "纠正实施越界；“你又在写代码了”比助手计划实施的事实略强，属于口吻偏激风险。"
+      }
+    },
+    {
+      "id": "supplement",
+      "kind": "predict",
+      "context": [
+        {
+          "role": "user",
+          "text": "移动端主要是表格太宽。"
+        },
+        {
+          "role": "assistant",
+          "text": "已整理表格滚动方案，还有其他遇到的问题吗？"
+        }
+      ],
+      "expectCalls": 1,
+      "allowNoPrediction": false,
+      "criteria": "可能补充已有问题，也可表示没有；不能编造设备数据",
+      "output": "暂时没有了，先把表格适配好吧。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1226,
+      "ttftMs": 1161,
+      "anchorOk": true,
+      "review": {
+        "plausibleReply": true,
+        "appropriateAbstention": false,
+        "note": "结束补充并聚焦表格，符合对话；不是唯一可能回复。"
+      }
+    },
+    {
+      "id": "continue",
+      "kind": "predict",
+      "context": [
+        {
+          "role": "user",
+          "text": "分两部分解释，先讲状态，再讲草稿保护。"
+        },
+        {
+          "role": "assistant",
+          "text": "第一部分：每个功能独立状态，取消只影响自己。"
+        }
+      ],
+      "expectCalls": 1,
+      "allowNoPrediction": false,
+      "criteria": "继续第二部分",
+      "output": "然后讲第二部分，草稿保护。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1119,
+      "ttftMs": 1067,
+      "anchorOk": true,
+      "review": {
+        "plausibleReply": true,
+        "appropriateAbstention": false,
+        "note": "精确接续用户指定的第二部分。"
+      }
+    },
+    {
+      "id": "insufficient",
+      "kind": "predict",
+      "context": [
+        {
+          "role": "user",
+          "text": "你好"
+        },
+        {
+          "role": "assistant",
+          "text": "你好，有什么可以帮你？"
+        }
+      ],
+      "expectCalls": 1,
+      "allowNoPrediction": true,
+      "criteria": "信息不足应无法预测，不虚构任务",
+      "output": "",
+      "ok": false,
+      "code": "cannot_predict",
+      "reason": null,
+      "calls": 1,
+      "ms": 1469,
+      "ttftMs": 1448,
+      "anchorOk": true,
+      "review": {
+        "plausibleReply": false,
+        "appropriateAbstention": true,
+        "note": "只有招呼，没有任务依据，明确拒绝预测。"
+      }
+    },
+    {
+      "id": "english",
+      "kind": "predict",
+      "context": [
+        {
+          "role": "user",
+          "text": "Keep it short. What is the tradeoff?"
+        },
+        {
+          "role": "assistant",
+          "text": "Option A is simpler, but needs manual retries. Option B adds automatic retries with more state."
+        }
+      ],
+      "expectCalls": 1,
+      "allowNoPrediction": false,
+      "criteria": "English concise question or choice; do not invent a prior decision",
+      "output": "Which one would you pick?",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 975,
+      "ttftMs": 966,
+      "anchorOk": true,
+      "review": {
+        "plausibleReply": true,
+        "appropriateAbstention": false,
+        "note": "简短英文追问选择，没有编造偏好。"
+      }
+    },
+    {
+      "id": "tone",
+      "kind": "predict",
+      "context": [
+        {
+          "role": "user",
+          "text": "别绕，结论呢？"
+        },
+        {
+          "role": "assistant",
+          "text": "测试发现耗时主要集中在模型首 token，而不是本地解析。"
+        }
+      ],
+      "expectCalls": 1,
+      "allowNoPrediction": false,
+      "criteria": "简短追问改进或确认，不变成冗长正式任务",
+      "output": "所以该怎么优化首 token？",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 1702,
+      "ttftMs": 1638,
+      "anchorOk": true,
+      "review": {
+        "plausibleReply": true,
+        "appropriateAbstention": false,
+        "note": "延续“别绕”式短问，追问首 token 改进。"
+      }
+    },
+    {
+      "id": "boundary",
+      "kind": "predict",
+      "context": [
+        {
+          "role": "user",
+          "text": "不要发布，只把本地测试跑通。"
+        },
+        {
+          "role": "assistant",
+          "text": "本地测试已经通过，接下来可以发布。"
+        }
+      ],
+      "expectCalls": 1,
+      "allowNoPrediction": false,
+      "criteria": "重申不要发布，而不是默认批准",
+      "output": "我说了不要发布，先别发。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 774,
+      "ttftMs": 754,
+      "anchorOk": true,
+      "review": {
+        "plausibleReply": true,
+        "appropriateAbstention": false,
+        "note": "重申禁止发布，不把助手建议当用户授权。"
+      }
+    },
+    {
+      "id": "choice",
+      "kind": "predict",
+      "context": [
+        {
+          "role": "user",
+          "text": "我更在意稳定性，快一点不是重点。"
+        },
+        {
+          "role": "assistant",
+          "text": "A 每次更快但偶有丢稿；B 稍慢且始终保护原稿。"
+        }
+      ],
+      "expectCalls": 1,
+      "allowNoPrediction": false,
+      "criteria": "倾向 B，依据稳定性偏好",
+      "output": "那就选 B 吧，稳定更重要。",
+      "ok": true,
+      "code": null,
+      "reason": null,
+      "calls": 1,
+      "ms": 895,
+      "ttftMs": 861,
+      "anchorOk": true,
+      "review": {
+        "plausibleReply": true,
+        "appropriateAbstention": false,
+        "note": "根据稳定性偏好选 B，依据明确。"
+      }
+    }
+  ],
+  "date": "2026-10-18",
+  "runtime": "DSH Desktop 0.2.1-rc.2",
+  "effectiveReasoningEffort": "low",
+  "reviewer": "Implementing assistant, direct case-by-case review; not independent blind review",
+  "summary": {
+    "optimize": {
+      "cases": 30,
+      "timedCases": 29,
+      "p50Ms": 2110,
+      "p95Ms": 3438,
+      "badCalls": 0,
+      "failures": 0,
+      "improvable": 21,
+      "substantivelyImproved": 18,
+      "improvementRate": 0.8571428571428571
+    },
+    "predict": {
+      "cases": 10,
+      "timedCases": 10,
+      "p50Ms": 1034,
+      "p95Ms": 1702,
+      "badCalls": 0,
+      "failures": 0,
+      "plausibleCandidates": 9,
+      "appropriateAbstentions": 1
+    }
+  }
+}

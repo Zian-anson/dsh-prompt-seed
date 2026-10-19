@@ -1,88 +1,34 @@
-/**
- * prompt-seed / 浏览器半区（0.15.0）
- * ---------------------------------------------------------------------------
- * 一个按钮 + 一次流式请求。没有后台任务、预测、深度档位、引用芯片。
- * 流式 delta 只进入预览行；final ok 才写回 composer。
- */
-
+/** Browser UI: independent rewrite and prediction controls over safe shared primitives. */
 const ROUTE = '/api/prompt-seed/optimize';
-const CLIENT_VERSION = '0.19.2';
-
-const STRINGS = {
-  zh: {
-    idle: '优化提示词',
-    busy: '优化中… {s}s · 点击取消',
-    cancel: '取消',
-    done: '已更新',
-    unchanged: '未找到可补充的细节，已保留原文',
-    nothing: '这条消息不需要优化',
-    undo: '恢复原文',
-    redo: '再来一版',
-    failed: '优化失败，已保留原文',
-    timeout: '优化超时，已保留原文',
-    edited: '草稿已修改，结果已保留，点击取回',
-    ready: '结果已就绪 · 点击取回',
-    bind_hint: '新会话优化会在首条消息后绑定到当前对话',
-    job_lost: '任务已过期，请重试',
-    creating: '正在创建对话…',
-    refresh_failed: '状态同步失败，稍后自动重试',
-    predict_idle: '预测下一句',
-    predict_busy: '预测中…',
-    predict_unavailable: '这段上下文里没有可预测的下一步',
-    predict_failed: '预测失败',
-    reason: '原因：{reason}',
-  },
-  en: {
-    idle: 'Optimize prompt',
-    busy: 'Optimizing… {s}s · click to cancel',
-    cancel: 'Cancel',
-    done: 'Updated',
-    unchanged: 'Nothing to add — original kept',
-    nothing: 'Nothing to optimize here',
-    undo: 'Restore original',
-    redo: 'Try again',
-    failed: 'Optimization failed — original kept',
-    timeout: 'Timed out — original kept',
-    edited: 'Draft changed; result kept — click to retrieve',
-    ready: 'Result ready · click to retrieve',
-    bind_hint: 'This new-chat optimization will bind to the conversation after its first message',
-    job_lost: 'The job expired — try again',
-    creating: 'Creating conversation…',
-    refresh_failed: 'Status sync failed; retrying',
-    predict_idle: 'Predict next message',
-    predict_busy: 'Predicting…',
-    predict_unavailable: 'Nothing predictable from this context',
-    predict_failed: 'Prediction failed',
-    reason: 'Reason: {reason}',
-  },
-};
-
-function resolveLanguage(ctx) {
-  try {
-    var locale = typeof ctx?.get === 'function' ? ctx.get('locale') : undefined;
-    if (locale !== null && typeof locale === 'object' && typeof locale.id === 'string') {
-      return locale.id.toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en';
-    }
-  } catch (e) { /* locale optional */ }
-  try {
-    if (typeof window === 'object' && window.navigator && typeof window.navigator.language === 'string') {
-      return window.navigator.language.toLowerCase().indexOf('zh') === 0 ? 'zh' : 'en';
-    }
-  } catch (e) { /* non-browser */ }
-  return 'zh';
+const CLIENT_VERSION = '0.20.0';
+const controllers = new Map();
+const creating = new Set();
+const memoryDraftKeys = new Map();
+function storage() { try { return window.sessionStorage; } catch { return undefined; } }
+function stored(key) { try { return storage()?.getItem(key); } catch { return null; } }
+function save(key, value) { try { storage()?.setItem(key, value); } catch { /* optional */ } }
+function remove(key) { try { storage()?.removeItem(key); } catch { /* optional */ } }
+function postJson(body) {
+  return fetch(ROUTE, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(async (res) => {
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    return data;
+  });
 }
-
-function makeT(lang) {
-  var table = STRINGS[lang] || STRINGS.zh;
-  return function (key, params) {
-    var text = table[key] != null ? table[key] : (STRINGS.zh[key] != null ? STRINGS.zh[key] : key);
-    if (params) {
-      for (var name in params) text = text.split('{' + name + '}').join(String(params[name]));
-    }
-    return text;
-  };
+async function streamRequest(body, onEvent) {
+  const response = await fetch(ROUTE, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' }, body: JSON.stringify(body) });
+  return readEventResponse(response, onEvent);
 }
-
+function draftKey(workspaceId) {
+  const name = 'prompt-seed:unbound:v2:' + (workspaceId || 'default');
+  let key = stored(name);
+  if (!key) {
+    key = memoryDraftKeys.get(name) ?? ('draft:' + (globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)));
+    memoryDraftKeys.set(name, key);
+    save(name, key);
+  }
+  return key;
+}
 function SparkIcon() {
   return React.createElement('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': 'true' }, [
     React.createElement('path', { key: 'p', d: 'M12 2l2.4 6.6L21 11l-6.6 2.4L12 20l-2.4-6.6L3 11l6.6-2.4L12 2z', fill: 'currentColor' }),
@@ -97,18 +43,6 @@ function CrystalIcon() {
   ]);
 }
 
-/**
- * 会话里是否已经"有来有回"：旧行为来自 useSession 的 14 个字段。
- * blank / running / awaitingFirstTurn 任一为真都不预测。
- */
-function hasConversationContext(session) {
-  if (session === null || session === undefined || typeof session !== 'object') return false;
-  if (session.blank === true) return false;
-  if (session.running === true) return false;
-  if (session.awaitingFirstTurn === true) return false;
-  return true;
-}
-
 function SpinnerIcon() {
   return React.createElement('svg', { width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': 'true', className: 'dsh-opt-spin' }, [
     React.createElement('circle', { key: 't', cx: 12, cy: 12, r: 8.5, stroke: 'currentColor', strokeWidth: 2.4, opacity: 0.18 }),
@@ -116,881 +50,240 @@ function SpinnerIcon() {
   ]);
 }
 
-function UndoIcon() {
-  return React.createElement('svg', { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': 'true' }, [
-    React.createElement('path', { key: 'p', d: 'M9 7H5v-4M5 7c2.2-2.7 5.4-4 9-4 5 0 9 4 9 9s-4 9-9 9c-3.3 0-6.2-1.8-7.8-4.5', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+function MoreIcon() {
+  return React.createElement('svg', { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'currentColor', 'aria-hidden': 'true' }, [
+    ...[5, 12, 19].map((cx) => React.createElement('circle', { key: cx, cx, cy: 12, r: 1.8 })),
   ]);
 }
 
-const CSS = [
-  '.dsh-opt-group{display:inline-flex;align-items:center;gap:6px;max-width:100%}',
-  '.dsh-opt-main{display:inline-flex;align-items:center;gap:4px;border:0;background:transparent;color:inherit;cursor:pointer;font:inherit;padding:4px 6px;border-radius:6px;opacity:.85}',
-  '.dsh-opt-main:hover{opacity:1;background:rgba(127,127,127,.12)}',
-  '.dsh-opt-main:disabled{opacity:.35;cursor:default}',
-  '.dsh-opt-spin{animation:dsh-opt-spin 0.9s linear infinite}',
-  '@keyframes dsh-opt-spin{to{transform:rotate(360deg)}}',
-  '.dsh-opt-secondary{display:inline-flex;align-items:center;gap:4px;border:0;background:transparent;color:inherit;opacity:.7;cursor:pointer;font-size:12px;padding:2px 4px;border-radius:4px}',
-  '.dsh-opt-secondary:hover{opacity:1;background:rgba(127,127,127,.12)}',
-  '.ps-preview{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;opacity:.55}',
-  '.ps-note{font-size:12px;opacity:.65;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
-].join('\n');
-
-function injectStyles(css) {
-  try {
-    var id = 'dsh-prompt-seed-style';
-    if (document.getElementById(id) !== null) return function () {};
-    var el = document.createElement('style');
-    el.id = id;
-    el.textContent = css;
-    document.head.appendChild(el);
-    return function () { el.remove(); };
-  } catch (e) {
-    return function () {};
-  }
+const CSS = `
+.ps-tools{position:relative;display:inline-flex;align-items:center;gap:2px;color:inherit}
+.ps-button{display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:30px;padding:5px;border:0;border-radius:7px;background:transparent;color:inherit;cursor:pointer}
+.ps-button:hover:not(:disabled){background:rgba(127,127,127,.14)}
+.ps-button:focus-visible,.ps-panel button:focus-visible{outline:2px solid currentColor;outline-offset:2px}
+.ps-button:disabled{opacity:.3;cursor:default}
+.ps-secondary{opacity:.65;min-width:26px}
+.ps-status{font-size:12px;line-height:1.4;white-space:nowrap;opacity:.72}
+.ps-pending{color:#326bd6;opacity:1}
+.ps-pending::after{content:"";position:absolute;right:2px;top:2px;width:5px;height:5px;border-radius:50%;background:currentColor}
+.ps-secondary{position:relative}
+.ps-error{color:var(--color-danger,#bc4747);opacity:1}
+.ps-panel{position:absolute;z-index:100;right:0;bottom:calc(100% + 10px);width:360px;max-width:calc(100vw - 36px);padding:16px;border:1px solid rgba(127,127,127,.25);border-radius:12px;background:var(--background-color,#fff);color:var(--text-color,#252525);box-shadow:0 10px 36px #0002}
+.ps-panel-title{font-size:13px;font-weight:600;margin:0 0 12px}
+.ps-result{white-space:pre-wrap;overflow-wrap:anywhere;max-height:260px;overflow:auto;font-size:14px;line-height:1.65;margin:0 0 14px;user-select:text}
+.ps-panel-hint{font-size:13px;line-height:1.5;margin:0 0 12px;opacity:.75}
+.ps-panel-actions{display:flex;justify-content:flex-end;gap:8px}
+.ps-panel button{font:inherit;font-size:13px;border:1px solid #8884;background:transparent;color:inherit;border-radius:6px;padding:5px 10px;cursor:pointer}
+.ps-panel button:disabled{opacity:.4;cursor:default}
+.ps-panel .ps-primary{background:#326bd6;color:#fff;border-color:#326bd6}
+.ps-actions{width:160px;padding:6px;display:flex;flex-direction:column;gap:2px}
+.ps-actions button{border:0;padding:8px 10px;text-align:left}
+.ps-actions button:hover{background:rgba(127,127,127,.12)}
+.dsh-opt-spin{animation:ps-spin .9s linear infinite}
+@keyframes ps-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.dsh-opt-spin{animation:none}}
+@media(prefers-color-scheme:dark){.ps-panel{background:var(--background-color,#262626);color:var(--text-color,#eee)}}
+`;
+function injectStyles() {
+  if (typeof document === 'undefined') return () => {};
+  if (document.getElementById('dsh-prompt-seed-style')) return () => {};
+  const el = document.createElement('style');
+  el.id = 'dsh-prompt-seed-style'; el.textContent = CSS; document.head.appendChild(el);
+  return () => el.remove();
 }
 
-/**
- * 把 NDJSON 响应逐事件读出来。
- * @param {Response} response fetch 响应。
- * @param {(event: object) => void} onEvent 事件回调。
- * @returns {Promise<object | null>} final 事件。
- */
-async function readEvents(response, onEvent) {
-  const contentType = String(response.headers.get('content-type') || '');
-  if (contentType.indexOf('application/x-ndjson') === -1) {
-    const data = await response.json();
-    if (data && data.type === 'final') onEvent(data);
-    return data;
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = '';
-  let final = null;
-  while (true) {
-    const chunk = await reader.read();
-    if (chunk.done) break;
-    buffer += decoder.decode(chunk.value, { stream: true });
-    let index;
-    while ((index = buffer.indexOf('\n')) >= 0) {
-      const line = buffer.slice(0, index).trim();
-      buffer = buffer.slice(index + 1);
-      if (line === '') continue;
-      let event;
-      try { event = JSON.parse(line); } catch (e) { continue; }
-      onEvent(event);
-      if (event.type === 'final') final = event;
+/** One contextual entry; feature controllers retain separate lifecycles and recovery. */
+function ComposerControls({ tools, input, canPredict }) {
+  const [states, setStates] = React.useState(() => tools.map(({ controller }) => controller.getState()));
+  const [panel, setPanel] = React.useState(null);
+  const anchor = React.useRef(null);
+  React.useEffect(() => {
+    const unsubscribers = tools.map(({ controller }, index) => controller.subscribe((next) => {
+      setStates((previous) => previous.map((state, i) => i === index ? next : state));
+    }));
+    return () => { for (const unsubscribe of unsubscribers) unsubscribe(); };
+  }, [tools]);
+  React.useEffect(() => {
+    if (!panel || typeof document === 'undefined') return undefined;
+    const dismiss = (event) => { if (anchor.current && !anchor.current.contains(event.target)) setPanel(null); };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [panel]);
+  const selected = input.draft.trim() ? 0 : 1;
+  const controller = tools[selected].controller;
+  const state = states[selected];
+  const prediction = selected === 1;
+  const busy = state.status === 'running';
+  const ready = state.pending !== null;
+  const eligible = (index) => index === 0 || (canPredict && states[index].contextAvailable);
+  const label = busy ? (prediction ? '预测中' : '优化中') + ' · 点击取消'
+    : ready ? (prediction ? '查看预测结果' : '查看优化结果')
+      : controller.untouched() ? (prediction ? '换一句' : '换一版') : (prediction ? '预测下一句' : '优化提示词');
+  const notice = busy ? '' : state.error ? '失败'
+    : state.status === 'neutral' ? ({ '已清楚，保留原文': '未改动', '暂时无法预测': '暂无预测', '这条消息不需要优化': '无需优化' }[state.note] ?? '') : '';
+  const detail = state.error || (state.status === 'neutral' ? state.note : '');
+  const actions = [];
+  for (let index = 0; index < tools.length; index++) {
+    const feature = tools[index].controller;
+    const featureState = states[index];
+    const name = index === 0 ? '优化' : '预测';
+    if (index !== selected && featureState.status === 'running') actions.push({ id: 'cancel-' + feature.kind, text: '取消' + name, run: () => { void feature.cancel(); setPanel(null); } });
+    else if (index !== selected && featureState.pending) actions.push({ id: 'view-' + feature.kind, text: '查看' + name + '结果', run: () => setPanel({ mode: 'result', index }) });
+    else if (index !== selected && featureState.error) actions.push({ id: 'error-' + feature.kind, text: name + '失败', run: () => setPanel({ mode: 'error', index }) });
+    if (featureState.status === 'running') continue;
+    if (index === 0 && featureState.original && featureState.original.text !== input.draft) actions.push({ id: 'undo', text: '恢复原文', run: () => { if (feature.restore()) setPanel(null); else setPanel({ mode: 'original', index }); } });
+    if (index === 1 && feature.untouched()) {
+      if (feature.canRun(eligible(index))) actions.push({ id: 'again-predict', text: '换一句', run: () => { setPanel(null); void feature.run(eligible(index)); } });
+      actions.push({ id: 'withdraw', text: '撤回预测', run: () => { feature.withdraw(); setPanel(null); } });
     }
   }
-  const rest = buffer.trim();
-  if (rest !== '') {
-    try {
-      const event = JSON.parse(rest);
-      onEvent(event);
-      if (event.type === 'final') final = event;
-    } catch (e) { /* 半行丢弃 */ }
+  const other = states[1 - selected];
+  const otherName = prediction ? '优化' : '预测';
+  const moreLabel = other.status === 'running' ? otherName + '中 · 草稿操作' : other.pending ? otherName + '结果待取 · 草稿操作' : other.error ? otherName + '失败 · 草稿操作' : '草稿操作';
+  const children = [React.createElement('button', {
+    key: 'main', type: 'button', className: 'ps-button', title: detail ? detail + ' · ' + label : label, 'aria-label': label,
+    'data-testid': 'prompt-seed-' + controller.kind, 'data-client-version': CLIENT_VERSION,
+    disabled: !busy && !ready && !controller.canRun(eligible(selected)), onClick: () => {
+      setPanel(null);
+      if (busy) { void controller.cancel(); return; }
+      if (ready) { setPanel({ mode: 'result', index: selected }); return; }
+      void controller.run(eligible(selected));
+    },
+  }, React.createElement(busy ? SpinnerIcon : prediction ? CrystalIcon : SparkIcon))];
+  if (actions.length) children.push(React.createElement('button', {
+    key: 'more', type: 'button', className: 'ps-button ps-secondary' + (other.pending ? ' ps-pending' : other.error ? ' ps-error' : ''),
+    title: moreLabel, 'aria-label': moreLabel, 'aria-expanded': panel?.mode === 'actions', 'aria-haspopup': 'dialog',
+    'data-testid': 'prompt-seed-more', onClick: () => setPanel(panel?.mode === 'actions' ? null : { mode: 'actions' }),
+  }, React.createElement(other.status === 'running' ? SpinnerIcon : MoreIcon)));
+  if (notice) children.push(React.createElement('span', { key: 'notice', className: 'ps-status' + (state.error ? ' ps-error' : ''), title: detail, role: 'status' }, notice));
+  if (panel?.mode === 'actions' && actions.length) children.push(React.createElement('div', {
+    key: 'actions', role: 'dialog', 'aria-label': '草稿操作', className: 'ps-panel ps-actions',
+  }, [
+    ...actions.map((action) => React.createElement('button', { key: action.id, type: 'button', 'data-testid': 'prompt-seed-' + action.id, onClick: action.run }, action.text)),
+    React.createElement('button', { key: 'close', type: 'button', onClick: () => setPanel(null) }, '关闭'),
+  ]));
+  else if (panel && panel.mode !== 'actions') {
+    const feature = tools[panel.index].controller;
+    const featureState = states[panel.index];
+    const original = panel.mode === 'original';
+    const error = panel.mode === 'error';
+    const text = original ? feature.previewOriginal() : error ? featureState.error : featureState.pending?.text;
+    const canReplace = !error && (original ? feature.canRestore() : feature.canReplace());
+    const title = original ? '原文预览' : (panel.index === 0 ? '优化' : '预测') + (error ? '失败' : '结果');
+    if (typeof text === 'string' && text) children.push(React.createElement('div', { key: 'panel', role: 'dialog', 'aria-label': title, className: 'ps-panel' }, [
+      React.createElement('div', { key: 'title', className: 'ps-panel-title' }, title),
+      React.createElement('div', { key: 'text', className: 'ps-result' }, text),
+      !error && !canReplace && React.createElement('div', { key: 'hint', className: 'ps-panel-hint' }, '无法安全替换，可复制所需文字。'),
+      React.createElement('div', { key: 'buttons', className: 'ps-panel-actions' }, [
+        React.createElement('button', { key: 'close', type: 'button', onClick: () => setPanel(null) }, '关闭'),
+        !error && React.createElement('button', { key: 'apply', type: 'button', className: 'ps-primary',
+          disabled: !canReplace, 'data-testid': 'prompt-seed-replace-' + feature.kind,
+          onClick: () => { if (original ? feature.restore(true) : feature.replace()) setPanel(null); },
+        }, '替换草稿'),
+      ]),
+    ]));
   }
-  return final;
-}
-
-function feedback(kind, final, before, after) {
-  try {
-    fetch(ROUTE, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        feedback: { kind: kind, route: final?.route || null, charsDelta: (after || '').length - (before || '').length },
-        runId: final?.requestId || undefined,
-      }),
-    }).catch(function () {});
-  } catch (e) { /* 反馈不阻塞 */ }
-}
-
-
-const UNBOUND_KEY = 'dsh-prompt-seed:unbound';
-var memoryUnbound = null;
-var sessionKeys = new WeakMap();
-
-function uuid() {
-  try {
-    if (typeof crypto === 'object' && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
-  } catch (e) { /* fallback */ }
-  return 'draft-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
-}
-
-function readUnbound() {
-  let value = memoryUnbound;
-  try {
-    if (typeof sessionStorage === 'object') value = sessionStorage.getItem(UNBOUND_KEY);
-  } catch (e) { /* storage unavailable */ }
-  // 只有 draft: key 才是新会话令牌；旧版本/异常写入的 s: 值一律丢弃，避免串会话。
-  return typeof value === 'string' && value.indexOf('draft:') === 0 ? value : null;
-}
-
-function ensureUnbound() {
-  var existing = readUnbound();
-  if (typeof existing === 'string' && existing !== '') return existing;
-  var key = 'draft:' + uuid();
-  try {
-    if (typeof sessionStorage === 'object') sessionStorage.setItem(UNBOUND_KEY, key);
-    else memoryUnbound = key;
-  } catch (e) {
-    memoryUnbound = key;
-  }
-  return key;
-}
-
-function clearUnbound() {
-  memoryUnbound = null;
-  try {
-    if (typeof sessionStorage === 'object') sessionStorage.removeItem(UNBOUND_KEY);
-  } catch (e) { /* ignore */ }
-}
-
-function keyFor(sessionId, session) {
-  if (typeof sessionId === 'string' && sessionId !== '') return 's:' + sessionId;
-  if (session !== null && typeof session === 'object') {
-    var known = sessionKeys.get(session);
-    if (typeof known === 'string') return known;
-    var key = ensureUnbound();
-    sessionKeys.set(session, key);
-    return key;
-  }
-  return ensureUnbound();
-}
-
-function resolveSessionId(props, snapshot) {
-  if (typeof props.sessionId === 'string' && props.sessionId !== '') return props.sessionId;
-  if (props.session !== null && typeof props.session === 'object') {
-    if (typeof props.session.id === 'string' && props.session.id !== '') return props.session.id;
-    if (typeof props.session.sessionId === 'string' && props.session.sessionId !== '') return props.session.sessionId;
-  }
-  if (snapshot !== null && typeof snapshot === 'object') {
-    if (typeof snapshot.id === 'string' && snapshot.id !== '') return snapshot.id;
-    if (typeof snapshot.sessionId === 'string' && snapshot.sessionId !== '') return snapshot.sessionId;
-  }
-  return undefined;
-}
-
-
-const FIRST_KEY_PREFIX = 'prompt-seed:first:';
-const ORIGIN_PREFIX = 'prompt-seed:origin:';
-const DRAFT_KEY_PREFIX = 'prompt-seed:draft:';
-
-function storageGet(key) {
-  try { if (typeof sessionStorage === 'object') return sessionStorage.getItem(key); } catch (e) { /* ignore */ }
-  return null;
-}
-
-function storageSet(key, value) {
-  try { if (typeof sessionStorage === 'object') sessionStorage.setItem(key, value); } catch (e) { /* ignore */ }
-}
-
-function storageRemove(key) {
-  try { if (typeof sessionStorage === 'object') sessionStorage.removeItem(key); } catch (e) { /* ignore */ }
-}
-
-function saveFirstPending(sessionId, text, autoTitle) {
-  if (typeof sessionId !== 'string' || sessionId === '') return;
-  storageSet(FIRST_KEY_PREFIX + sessionId, JSON.stringify({ text: text, autoTitle: autoTitle, createdAt: Date.now() }));
-}
-
-function readFirstPending(sessionId) {
-  if (typeof sessionId !== 'string' || sessionId === '') return null;
-  const raw = storageGet(FIRST_KEY_PREFIX + sessionId);
-  if (typeof raw !== 'string' || raw === '') return null;
-  try {
-    const parsed = JSON.parse(raw);
-    if (parsed !== null && typeof parsed === 'object' && typeof parsed.text === 'string' && parsed.text.trim() !== '') return parsed;
-  } catch (e) { /* ignore */ }
-  return null;
-}
-
-function clearFirstPending(sessionId) {
-  if (typeof sessionId === 'string' && sessionId !== '') storageRemove(FIRST_KEY_PREFIX + sessionId);
-}
-
-function markOriginSession(sessionId) {
-  if (typeof sessionId === 'string' && sessionId !== '') storageSet(ORIGIN_PREFIX + sessionId, '1');
-}
-
-function isOriginSession(sessionId) {
-  return typeof sessionId === 'string' && sessionId !== '' && storageGet(ORIGIN_PREFIX + sessionId) === '1';
-}
-
-function saveSessionDraft(sessionId, text) {
-  if (!isOriginSession(sessionId)) return;
-  if (typeof text !== 'string' || text === '') storageRemove(DRAFT_KEY_PREFIX + sessionId);
-  else storageSet(DRAFT_KEY_PREFIX + sessionId, text);
-}
-
-function readSessionDraft(sessionId) {
-  if (!isOriginSession(sessionId)) return '';
-  const value = storageGet(DRAFT_KEY_PREFIX + sessionId);
-  return typeof value === 'string' ? value : '';
-}
-
-/**
- * 生成会话标题：不额外调用模型。
- * @param {string} text 输入/优化稿。
- * @returns {string} 标题。
- */
-function titleFrom(text) {
-  let s = String(text ?? '').replace(/\r/g, '\n').trim();
-  s = (s.split('\n')[0] ?? '').trim();
-  s = s.replace(/^[#>*\-\d.、)\s]+/, '').trim();
-  s = s.replace(/^(请|帮我|帮忙|麻烦|我想|我要|需要|能否|可以)[，,：:\s]*/i, '').trim();
-  s = s.replace(/[。！？?!.；;：:，,\s]+$/g, '').trim();
-  const chars = Array.from(s);
-  if (chars.length > 24) s = chars.slice(0, 24).join('').trim();
-  return s === '' ? '新对话' : s;
-}
-
-
-function resolveWorkspaceId(props, session, snapshot) {
-  if (typeof props.workspaceId === 'string' && props.workspaceId !== '') return props.workspaceId;
-  if (session !== null && typeof session === 'object' && typeof session.workspaceId === 'string' && session.workspaceId !== '') return session.workspaceId;
-  if (snapshot !== null && typeof snapshot === 'object' && typeof snapshot.workspaceId === 'string' && snapshot.workspaceId !== '') return snapshot.workspaceId;
-  return undefined;
-}
-
-function resolveCwd(props, session, snapshot) {
-  if (typeof props.cwd === 'string' && props.cwd !== '') return props.cwd;
-  if (session !== null && typeof session === 'object' && typeof session.cwd === 'string' && session.cwd !== '') return session.cwd;
-  if (snapshot !== null && typeof snapshot === 'object' && typeof snapshot.cwd === 'string' && snapshot.cwd !== '') return snapshot.cwd;
-  return undefined;
-}
-
-function postJson(payload) {
-  return fetch(ROUTE, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(payload),
-  }).then(function (response) { return response.json(); });
-}
-
-function jobFinal(job) {
-  return job !== null && typeof job === 'object' && job.result !== null && typeof job.result === 'object' ? job.result : null;
-}
-
-function jobTerminal(job) {
-  return job !== null && typeof job === 'object' && (job.status === 'done' || job.status === 'failed' || job.status === 'cancelled');
-}
-
-function OptimizeButton(props) {
-  const useInput = props.useInput;
-  const inputActions = props.inputActions;
-  const tr = typeof props.tr === 'function' ? props.tr : makeT('zh');
-  const sessionApi = props.sessionApi;
-  const draft = useInput(function (s) { return s.draft; });
-  const draftRev = useInput(function (s) { return s.draftRev; });
-  const phase = useInput(function (s) { return s.phase; });
-  const useSession = typeof props.useSession === 'function' ? props.useSession : null;
-  const sessionSnapshot = useSession !== null ? useSession(function (s) { return s; }) : undefined;
-  const session = props.session !== undefined && props.session !== null ? props.session : sessionSnapshot;
-  const sessionId = resolveSessionId(props, sessionSnapshot);
-  const conversationKey = keyFor(sessionId, session);
-  const blankSession = (session !== null && typeof session === 'object' && session.blank === true) ||
-    (sessionSnapshot !== null && typeof sessionSnapshot === 'object' && sessionSnapshot.blank === true) ||
-    (props.session !== null && typeof props.session === 'object' && props.session.blank === true);
-
-  const [busyState, setBusyState] = React.useState(false);
-  const [previewState, setPreviewState] = React.useState('');
-  const [elapsedState, setElapsedState] = React.useState(0);
-  const [errorState, setErrorState] = React.useState('');
-  const [noteState, setNoteState] = React.useState('');
-  const [jobIdState, setJobIdState] = React.useState(null);
-  const [readyState, setReadyState] = React.useState(null);
-  const [historyState, setHistoryState] = React.useState([]);
-  const [predictBusyState, setPredictBusyState] = React.useState(false);
-  const [predictNoteState, setPredictNoteState] = React.useState('');
-
-  const abortRef = React.useRef(null);
-  const jobIdRef = React.useRef(null);
-  const readyRef = React.useRef(null);
-  const draftRef = React.useRef(draft);
-  const draftRevRef = React.useRef(draftRev);
-  const mountedRef = React.useRef(true);
-  const startingRef = React.useRef(false);
-  const localRunRef = React.useRef(false);
-  const consumedRef = React.useRef(new Set());
-  const creatingRef = React.useRef(false);
-  const autoStartTextRef = React.useRef('');
-
-  draftRef.current = draft;
-  draftRevRef.current = draftRev;
-  jobIdRef.current = jobIdState;
-  readyRef.current = readyState;
-
-  React.useEffect(function () {
-    return function () {
-      mountedRef.current = false;
-      if (abortRef.current) abortRef.current.abort();
-    };
-  }, []);
-
-  React.useEffect(function () {
-    if (!busyState) { setElapsedState(0); return undefined; }
-    const started = Date.now();
-    const timer = setInterval(function () { if (mountedRef.current) setElapsedState(Math.floor((Date.now() - started) / 1000)); }, 1000);
-    return function () { clearInterval(timer); };
-  }, [busyState]);
-
-  React.useEffect(function () {
-    setHistoryState(function (current) {
-      if (current.length === 0) return current;
-      return draft === current[current.length - 1].after ? current : [];
-    });
-    setErrorState('');
-    setNoteState('');
-    setPredictNoteState('');
-  }, [draft]);
-
-
-  React.useEffect(function () {
-    const text = autoStartTextRef.current;
-    if (text !== '' && draft === text) {
-      autoStartTextRef.current = '';
-      run(text);
-    }
-  }, [draft]);
-
-  React.useEffect(function () {
-    if (typeof sessionId !== 'string' || sessionId === '') return;
-
-    // openSession 后组件可能复用而不是卸载；重置创建锁，交给 pending 自动启动。
-    creatingRef.current = false;
-
-    const pending = readFirstPending(sessionId);
-    if (pending !== null) {
-      const pendingText = pending.text;
-      autoStartTextRef.current = '';
-      inputActions.setDraft(pendingText);
-      draftRef.current = pendingText;
-      saveSessionDraft(sessionId, pendingText);
-      clearFirstPending(sessionId);
-      // draft 可能已经等于待恢复文本，不能依赖第二次 draft effect 才启动。
-      const starter = setTimeout(function () {
-        if (mountedRef.current) run(pendingText);
-      }, 0);
-      starter.unref?.();
-      return;
-    }
-
-    const saved = readSessionDraft(sessionId);
-    if (saved !== '' && (typeof draftRef.current !== 'string' || draftRef.current === '')) {
-      inputActions.setDraft(saved);
-      draftRef.current = saved;
-    }
-  }, [sessionId]);
-
-  React.useEffect(function () {
-    if (typeof sessionId === 'string' && sessionId !== '') saveSessionDraft(sessionId, draft);
-  }, [draft, sessionId]);
-
-  function feedback(kind, final, before, after) {
-    try {
-      fetch(ROUTE, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          feedback: { kind: kind, route: final?.route || null, charsDelta: (after || '').length - (before || '').length },
-          runId: final?.requestId || undefined,
-        }),
-      }).catch(function () {});
-    } catch (e) { /* 反馈不阻塞 */ }
-  }
-
-  function applyJob(job, before) {
-    if (!job || job.id === undefined || consumedRef.current.has(job.id)) return;
-    const result = job.result;
-    if (!result || result.ok !== true || typeof result.text !== 'string' || result.text === '') return;
-    const beforeText = typeof before === 'string' ? before : job.inputText;
-    if (before === job.inputText && draftRef.current !== beforeText) {
-      setBusyState(false);
-      setReadyState(job);
-      setNoteState(tr('ready'));
-      return;
-    }
-    consumedRef.current.add(job.id);
-    inputActions.setDraft(result.text);
-    setHistoryState(function (current) {
-      const next = current.concat([{ before: beforeText, after: result.text, route: result.route, jobId: job.id, requestId: result.requestId }]);
-      return next.slice(-3);
-    });
-    feedback('applied', result, beforeText, result.text);
-    setBusyState(false);
-    setPreviewState('');
-    setReadyState(null);
-    setNoteState(result.changed === false ? tr('unchanged') : tr('done'));
-    jobIdRef.current = null;
-    setJobIdState(null);
-    postJson({ action: 'consume', jobId: job.id }).catch(function () {});
-  }
-
-  function failJob(job, message) {
-    if (!job || consumedRef.current.has(job.id)) return;
-    consumedRef.current.add(job.id);
-    setBusyState(false);
-    setPreviewState('');
-    setReadyState(null);
-    setErrorState(message || tr('failed'));
-    jobIdRef.current = null;
-    setJobIdState(null);
-    // 失败不立即 consume：切回该会话时仍应看到原因；TTL 会清理。
-  }
-
-  function handleJob(job) {
-    if (!job || !mountedRef.current || job.consumed === true || consumedRef.current.has(job.id)) return;
-    if (typeof job.conversationKey === 'string' && job.conversationKey !== '' && typeof sessionId !== 'string' && readUnbound() === null) {
-      try { if (typeof sessionStorage === 'object') sessionStorage.setItem(UNBOUND_KEY, job.conversationKey); } catch (e) { /* ignore */ }
-    }
-    if (job.status === 'running') {
-      jobIdRef.current = job.id;
-      setJobIdState(job.id);
-      setBusyState(true);
-      setPreviewState(typeof job.partialText === 'string' ? job.partialText.slice(-600) : '');
-      setErrorState('');
-      return;
-    }
-    if (job.status === 'done') {
-      const result = job.result;
-      if (result && result.ok === true) {
-        if (job.inputText !== '' && draftRef.current === job.inputText) {
-          applyJob(job, job.inputText);
-        } else {
-          jobIdRef.current = job.id;
-          setJobIdState(job.id);
-          setBusyState(false);
-          setPreviewState('');
-          setReadyState(job);
-          setNoteState(tr('ready'));
-        }
-      } else {
-        failJob(job, (result && result.error) || job.error || tr('failed'));
-      }
-      return;
-    }
-    if (job.status === 'failed') { failJob(job, job.error || tr('failed')); return; }
-    if (job.status === 'cancelled') { failJob(job, tr('cancel')); }
-  }
-
-  function queryKey() {
-    return conversationKey;
-  }
-
-  function refreshStatus() {
-    if (!mountedRef.current) return;
-    const key = queryKey();
-    postJson({ action: 'status', sessionId: sessionId, conversationKey: key }).then(function (res) {
-      if (!mountedRef.current) return;
-      if (!res || res.ok !== true) { setErrorState(tr('refresh_failed')); return; }
-      const job = res.job;
-      if (job === null || job === undefined) {
-        if (!startingRef.current && !localRunRef.current && jobIdRef.current !== null) {
-          jobIdRef.current = null;
-          setJobIdState(null);
-          setBusyState(false);
-          setPreviewState('');
-          setNoteState(tr('job_lost'));
-        }
-        return;
-      }
-      handleJob(job);
-    }).catch(function () {
-      if (mountedRef.current) setErrorState(tr('refresh_failed'));
-    });
-  }
-
-  React.useEffect(function () {
-    if (phase !== undefined && phase !== 'plain') return undefined;
-    refreshStatus();
-    return undefined;
-  }, [sessionId, conversationKey, phase]);
-
-  React.useEffect(function () {
-    function onVisible() {
-      if (typeof document !== 'undefined' && document.visibilityState === 'visible') refreshStatus();
-    }
-    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisible);
-    return function () { if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible); };
-  }, []);
-
-  React.useEffect(function () {
-    if (typeof sessionId !== 'string' || sessionId === '') return undefined;
-    const unbound = readUnbound();
-    if (typeof unbound !== 'string' || unbound === '') return undefined;
-    postJson({ action: 'bind', conversationKey: unbound, sessionId: sessionId }).then(function (res) {
-      if (res && res.ok === true) clearUnbound();
-      refreshStatus();
-    }).catch(function () { /* 下一次 status 会重试 */ });
-    return undefined;
-  }, [sessionId]);
-
-  React.useEffect(function () {
-    if (!busyState || jobIdState === null) return undefined;
-    let stopped = false;
-    const timer = setInterval(function () {
-      if (stopped || !mountedRef.current) return;
-      const key = queryKey();
-      postJson({ action: 'status', sessionId: sessionId, conversationKey: key }).then(function (res) {
-        if (stopped || !mountedRef.current) return;
-        if (res && res.ok === true && res.job) handleJob(res.job);
-      }).catch(function () { /* 下一次 tick 重试 */ });
-    }, 800);
-    return function () { stopped = true; clearInterval(timer); };
-  }, [busyState, jobIdState, sessionId, conversationKey]);
-
-  const busy = busyState;
-  const ready = readyState;
-  const predictBusy = predictBusyState;
-  const hasContent = typeof draft === 'string' && draft.trim() !== '';
-  const hasContext = hasConversationContext(session) || (session === undefined && typeof sessionId === 'string' && sessionId !== '');
-  const predictMode = !busy && !predictBusy && ready === null && !hasContent && hasContext;
-  const history = historyState;
-  const last = history.length > 0 ? history[history.length - 1] : null;
-
-
-  async function startFirstOptimize(text) {
-    if (creatingRef.current) return;
-
-    // 服务不可用时绝不能阻塞优化：回落为当前输入框直接优化。
-    if (sessionApi === undefined || sessionApi === null || sessionApi.available !== true) {
-      run(text);
-      return;
-    }
-
-    const workspaceId = resolveWorkspaceId(props, session, sessionSnapshot);
-    const cwd = resolveCwd(props, session, sessionSnapshot);
-    creatingRef.current = true;
-    setBusyState(true);
-    setPreviewState('');
-    setErrorState('');
-    setNoteState(tr('creating'));
-
-    function fallbackDirect(message, error) {
-      if (!mountedRef.current) return;
-      creatingRef.current = false;
-      setNoteState(message);
-      if (error !== undefined) console.warn('[prompt-seed] first-optimize session flow failed; optimizing directly', error);
-      run(text);
-    }
-
-    try {
-      const request = workspaceId !== undefined ? { workspaceId: workspaceId } : (cwd !== undefined ? { cwd: cwd } : {});
-      const created = await sessionApi.create(request);
-      const newId = created !== null && typeof created === 'object'
-        ? (typeof created.sessionId === 'string' ? created.sessionId : created.id)
-        : undefined;
-      if (typeof newId !== 'string' || newId === '') throw new Error('session create returned no id');
-
-      const autoTitle = titleFrom(text);
-      markOriginSession(newId);
-      saveFirstPending(newId, text, autoTitle);
-      saveSessionDraft(newId, text);
-
-      // create 复用了当前 blank Session：直接在当前组件启动优化。
-      if (newId === sessionId) {
-        try {
-          if (typeof sessionApi.rename === 'function') await sessionApi.rename(newId, autoTitle);
-        } catch (titleError) {
-          console.warn('[prompt-seed] session title failed', titleError);
-        }
-        creatingRef.current = false;
-        run(text);
-        return;
-      }
-
-      try {
-        sessionApi.open(newId);
-      } catch (openError) {
-        clearFirstPending(newId);
-        throw openError;
-      }
-
-      // openSession 正常会切换 sessionId；若 3s 后仍停留在旧输入框，直接优化，不能让点击卡死。
-      const watchdog = setTimeout(function () {
-        if (mountedRef.current && creatingRef.current) {
-          fallbackDirect('已创建对话但未打开，已直接优化当前输入');
-        }
-      }, 3000);
-      watchdog.unref?.();
-
-      try {
-        if (typeof sessionApi.rename === 'function') await sessionApi.rename(newId, autoTitle);
-      } catch (titleError) {
-        console.warn('[prompt-seed] session title failed', titleError);
-      }
-    } catch (error) {
-      fallbackDirect('创建对话失败，已直接优化当前输入', error);
-    }
-  }
-
-  async function run(text) {
-    if (busy || text.trim() === '') return;
-    const before = text;
-    const revAtStart = draftRevRef.current;
-    const key = keyFor(sessionId, session);
-    const runId = 'r-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
-    const controller = new AbortController();
-    abortRef.current = controller;
-    startingRef.current = true;
-    localRunRef.current = true;
-    setBusyState(true);
-    setPreviewState('');
-    setErrorState('');
-    setNoteState('');
-    setReadyState(null);
-    let final = null;
-    let finalJob = null;
-    try {
-      const response = await fetch(ROUTE, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', accept: 'application/x-ndjson' },
-        body: JSON.stringify({ action: 'optimize', text: before, sessionId: sessionId, conversationKey: key, runId: runId, stream: true }),
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        const data = await response.json().catch(function () { return null; });
-        throw new Error((data && data.error) || ('HTTP ' + response.status));
-      }
-      const data = await readEvents(response, function (event) {
-        if (!mountedRef.current) return;
-        if (event.type === 'meta' && typeof event.jobId === 'string') {
-          startingRef.current = false;
-          jobIdRef.current = event.jobId;
-          setJobIdState(event.jobId);
-          if (typeof sessionId !== 'string' && typeof event.conversationKey === 'string' && event.conversationKey.indexOf('draft:') === 0) {
-            try { if (typeof sessionStorage === 'object') sessionStorage.setItem(UNBOUND_KEY, event.conversationKey); } catch (e) { /* ignore */ }
-          }
-        }
-        if (event.type === 'delta' && typeof event.text === 'string') {
-          setPreviewState(function (current) {
-            const next = current + event.text;
-            return next.length > 600 ? next.slice(-600) : next;
-          });
-        }
-        if (event.type === 'final') {
-          final = event;
-          finalJob = { id: event.jobId, status: event.ok === true ? 'done' : 'failed', inputText: before, result: event, error: event.error || null };
-          if (event.ok === true) {
-            if (draftRevRef.current === revAtStart && draftRef.current === before) applyJob(finalJob, before);
-            else {
-              setBusyState(false);
-              setPreviewState('');
-              setReadyState(finalJob);
-              setNoteState(tr('ready'));
-            }
-          } else {
-            failJob(finalJob, event.error || tr('failed'));
-          }
-        }
-      });
-      if (final === null && data !== null && typeof data === 'object') {
-        if (data.code === 'job_running' && data.job) handleJob(data.job);
-        else if (data.code === 'nothing_to_optimize') setNoteState(tr('nothing'));
-        else if (data.code) setErrorState(data.error || tr('failed'));
-      }
-    } catch (error) {
-      if (error && error.name === 'AbortError') {
-        if (mountedRef.current && !jobIdRef.current) setNoteState(tr('cancel'));
-      } else if (mountedRef.current) {
-        setErrorState((error && error.message) || tr('failed'));
-      }
-    } finally {
-      startingRef.current = false;
-      localRunRef.current = false;
-      if (abortRef.current === controller) abortRef.current = null;
-      if (mountedRef.current && jobIdRef.current === null && final === null && readyRef.current === null) {
-        setBusyState(false);
-        setPreviewState('');
-      }
-    }
-  }
-
-  function cancelJob() {
-    const id = jobIdRef.current;
-    if (abortRef.current) abortRef.current.abort();
-    if (typeof id === 'string' && id !== '') {
-      postJson({ action: 'cancel', jobId: id }).then(function (res) {
-        if (!res || res.ok !== true) {
-          if (mountedRef.current) setErrorState(res && res.error ? res.error : tr('failed'));
-          refreshStatus();
-        }
-      }).catch(function () { /* 下一次 status 会处理 */ });
-    } else {
-      const key = keyFor(sessionId, session);
-      postJson({ action: 'status', sessionId: sessionId, conversationKey: key }).then(function (res) {
-        if (res && res.ok === true && res.job && res.job.status === 'running') {
-          return postJson({ action: 'cancel', jobId: res.job.id });
-        }
-        return null;
-      }).catch(function () {});
-    }
-    if (typeof id === 'string' && id !== '') postJson({ action: 'consume', jobId: id }).catch(function () {});
-    jobIdRef.current = null;
-    setJobIdState(null);
-    setBusyState(false);
-    setPreviewState('');
-    setReadyState(null);
-    setNoteState(tr('cancel'));
-  }
-
-  async function runPredict() {
-    if (predictBusyState || busy) return;
-    if (typeof sessionId !== 'string' || sessionId === '') {
-      setPredictNoteState(tr('predict_unavailable'));
-      return;
-    }
-    setPredictBusyState(true);
-    setPredictNoteState('');
-    setErrorState('');
-    try {
-      const res = await postJson({ action: 'predict', sessionId: sessionId });
-      if (res && res.ok === true && typeof res.text === 'string' && res.text.trim() !== '') {
-        inputActions.setDraft(res.text.trim());
-        setPredictNoteState('');
-      } else if (res && res.code === 'cannot_predict') {
-        setPredictNoteState(tr('predict_unavailable'));
-      } else {
-        setPredictNoteState(tr('predict_failed') + (res && res.error ? '：' + res.error : ''));
-      }
-    } catch (error) {
-      setPredictNoteState(tr('predict_failed') + (error && error.message ? '：' + error.message : ''));
-    } finally {
-      if (mountedRef.current) setPredictBusyState(false);
-    }
-  }
-
-  function onClick() {
-    if (creatingRef.current) return;
-    if (predictBusyState) return;
-    if (predictMode) { runPredict(); return; }
-    if (ready !== null) { applyJob(ready, draftRef.current); return; }
-    if (busy) { cancelJob(); return; }
-    if ((blankSession || typeof sessionId !== 'string' || sessionId === '') && !(typeof sessionId === 'string' && isOriginSession(sessionId))) {
-      startFirstOptimize(draft);
-      return;
-    }
-    run(draft);
-  }
-
-  function onUndo() {
-    if (last === null) return;
-    inputActions.setDraft(last.before);
-    feedback('reverted', { requestId: last.requestId, route: last.route }, last.after, last.before);
-    setHistoryState(function (current) { return current.slice(0, -1); });
-    setNoteState(tr('undo'));
-  }
-
-  function onRedo() {
-    const source = last !== null ? last.before : draft;
-    run(source);
-  }
-
-  const showPredict = predictMode || predictBusy;
-  const label = busy
-    ? tr('busy', { s: elapsedState })
-    : predictBusy
-      ? tr('predict_busy')
-      : predictMode
-        ? tr('predict_idle')
-        : ready !== null
-          ? tr('ready')
-          : tr('idle');
-  const icon = busy || predictBusy
-    ? React.createElement(SpinnerIcon, { key: 'icon' })
-    : showPredict
-      ? React.createElement(CrystalIcon, { key: 'icon' })
-      : React.createElement(SparkIcon, { key: 'icon' });
-  const children = [icon];
-
-  const main = React.createElement('button', {
-    type: 'button',
-    className: 'dsh-opt-main',
-    onClick: onClick,
-    disabled: predictBusy || (!busy && ready === null && !hasContent && !predictMode),
-    title: label,
-    'aria-label': label,
-    'data-testid': 'prompt-seed-optimize',
-    'data-client-version': CLIENT_VERSION,
+  return React.createElement('span', { ref: anchor, className: 'ps-tools', 'aria-label': '提示词工具',
+    onKeyDown: (event) => { if (event.key === 'Escape') setPanel(null); },
   }, children);
+}
 
-  const extras = [];
-  if (busy && previewState !== '') {
-    extras.push(React.createElement('span', { key: 'preview', className: 'ps-preview', title: previewState }, previewState.slice(-80)));
-  }
-  if (!busy && !predictMode && history.length > 0) {
-    extras.push(React.createElement('button', {
-      key: 'undo', type: 'button', className: 'dsh-opt-secondary', onClick: onUndo,
-      title: tr('undo'), 'aria-label': tr('undo'), 'data-testid': 'prompt-seed-undo',
-    }, [React.createElement(UndoIcon, { key: 'i' })]));
-    extras.push(React.createElement('button', {
-      key: 'redo', type: 'button', className: 'dsh-opt-secondary', onClick: onRedo,
-      title: tr('redo'), 'aria-label': tr('redo'), 'data-testid': 'prompt-seed-redo',
-    }, [React.createElement(SparkIcon, { key: 'i' })]));
-  }
-  if (!sessionId && busy) {
-    extras.push(React.createElement('span', { key: 'bind', className: 'ps-note', title: tr('bind_hint') }, tr('bind_hint')));
-  }
-  const note = errorState || noteState || predictNoteState;
-  if (note) extras.push(React.createElement('span', { key: 'note', className: 'ps-note', title: note }, note));
+function ComposerTools(props) {
+  const input = props.useInput((state) => state);
+  const session = typeof props.useSession === 'function' ? props.useSession((state) => state) : props.session;
+  const sessionId = props.sessionId || session?.sessionId || session?.id || props.session?.id;
+  const workspaceId = props.workspaceId || session?.workspaceId;
+  const key = sessionId ? 's:' + sessionId : draftKey(workspaceId);
+  const current = React.useRef(null);
+  current.current = { ...input, key };
+  const tools = React.useMemo(() => {
+    return ['optimize', 'predict'].map((kind) => {
+      const name = key + ':' + kind;
+      const io = {
+        key, sessionId, inputIdentity: props.inputActions, storage: storage(), semanticSupported: typeof props.inputActions.persistDraft === 'function',
+        readInput: () => current.current,
+        writeInput: (doc) => props.inputActions.setDraft(doc),
+        persistDraft: () => props.inputActions.persistDraft?.(),
+        post: postJson, stream: streamRequest,
+      };
+      let controller = controllers.get(name);
+      if (!controller) { controller = createFeatureController(kind, io); controllers.set(name, controller); }
+      return { controller, io };
+    });
+  }, [key, props.inputActions]);
 
-  if (extras.length === 0) return main;
-  return React.createElement('span', { className: 'dsh-opt-group' }, [main].concat(extras));
+  React.useEffect(() => {
+    const handoffKey = 'prompt-seed:handoff:' + sessionId;
+    const unsentKey = 'prompt-seed:unsent:' + key;
+    const saved = stored(sessionId ? handoffKey : unsentKey);
+    if (saved && !current.current.draft && !(current.current.attachmentIds?.length)) {
+      try { const doc = JSON.parse(saved); if (typeof doc?.text === 'string' && Array.isArray(doc.references) && (!(doc.references.length || doc.command) || typeof props.inputActions.persistDraft === 'function')) props.inputActions.setDraft(doc.references.length || doc.command ? doc : doc.text); } catch { /* invalid handoff */ }
+    }
+    if (sessionId) remove(handoffKey);
+    for (const entry of tools) {
+      entry.io.onStarted = () => {
+        if (sessionId || entry.controller.kind !== 'optimize' || creating.has(key) || !props.sessionApi?.available) return;
+        creating.add(key);
+        void (async () => {
+          try {
+            const created = await props.sessionApi.create(workspaceId ? { workspaceId } : props.cwd ? { cwd: props.cwd } : {});
+            const newId = created?.sessionId || created?.id;
+            if (!newId) throw new Error('创建对话未返回标识');
+            const live = current.current;
+            const doc = live.key === key ? draftDocument(live) : JSON.parse(stored(unsentKey) || 'null');
+            if (doc) save('prompt-seed:handoff:' + newId, JSON.stringify(doc));
+            if (await entry.controller.bind(newId)) {
+              controllers.delete(key + ':optimize');
+              controllers.set('s:' + newId + ':optimize', entry.controller);
+            }
+            if (current.current.key === key) props.sessionApi.open(newId);
+            remove('prompt-seed:unbound:v2:' + (workspaceId || 'default'));
+            memoryDraftKeys.delete('prompt-seed:unbound:v2:' + (workspaceId || 'default'));
+          } catch (error) {
+            console.warn('[prompt-seed] session handoff failed; generation remains in the original draft', error);
+          } finally { creating.delete(key); }
+        })();
+      };
+      void entry.controller.attach(entry.io);
+    }
+    const refresh = () => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') for (const entry of tools) void entry.controller.refresh();
+    };
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', refresh);
+    const timer = setInterval(() => {
+      for (const entry of tools) if (entry.controller.getState().status === 'running') void entry.controller.refresh();
+    }, 1200);
+    return () => {
+      clearInterval(timer);
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', refresh);
+      for (const entry of tools) entry.controller.detach();
+    };
+  }, [tools]);
+  React.useEffect(() => {
+    for (const entry of tools) entry.controller.observe(current.current);
+    if (!sessionId) save('prompt-seed:unsent:' + key, JSON.stringify(draftDocument(current.current)));
+  }, [input, tools, key, sessionId]);
+  React.useEffect(() => { for (const entry of tools) void entry.controller.refresh(); }, [session?.running, session?.pendingSubmissions?.length]);
+  const canPredict = session?.blank !== true && session?.running !== true && session?.awaitingFirstTurn !== true;
+  return React.createElement(ComposerControls, { key, tools, input, canPredict });
 }
 
 function apply(ctx) {
-  ctx.effect(function () { return injectStyles(CSS); }, 'prompt-seed:styles');
-  // 当前 DSH 中文界面下 locale 仍可能返回 en-US；用户明确要求中文按钮。
-  const tr = makeT('zh');
-
-  function mount(scope, sessionApi) {
-    const slots = scope.slots;
-    if (slots === undefined || typeof slots.inject !== 'function' || typeof slots.register !== 'function') {
-      console.warn('[prompt-seed] slots service unavailable; the button will not be mounted.');
-      return;
-    }
-    try {
-      slots.inject('conversation.input.right', function () {
-        return slots.register(
-          { name: 'conversation.input.right', id: 'prompt-seed', order: -10 },
-          function (props) { return React.createElement(OptimizeButton, Object.assign({}, props, { tr: tr, sessionApi: sessionApi })); },
-        );
-      });
-    } catch (error) {
-      console.warn('[prompt-seed] could not mount into conversation.input.right.', error);
-    }
-  }
-
-  function makeSessionApi(sessions, uiWorkspace) {
-    return {
-      available: sessions !== undefined && sessions !== null && typeof sessions.create === 'function' &&
-        uiWorkspace !== undefined && uiWorkspace !== null && typeof uiWorkspace.openSession === 'function',
-      create: async function (request) {
-        if (sessions === undefined || typeof sessions.create !== 'function') throw new Error('sessions service unavailable');
-        return sessions.create(request);
-      },
-      open: function (id) {
-        if (uiWorkspace === undefined || typeof uiWorkspace.openSession !== 'function') throw new Error('uiWorkspace service unavailable');
-        return uiWorkspace.openSession(id);
-      },
-      rename: async function (id, title) {
-        if (sessions === undefined || typeof sessions.using !== 'function') return;
-        const result = await sessions.using(id, { source: 'prompt-seed' }, function (reference) {
-          return reference.binding.session.rename(title);
-        });
-        if (result && result.ok === false) throw new Error(result.error?.message || 'rename failed');
-      },
-    };
-  }
-
-  // DSH 客户端服务必须显式 inject；运行时 ctx.get('sessions') 在未声明依赖时拿不到。
   try {
-    ctx.inject(['slots', 'sessions', 'uiWorkspace'], function (scope) {
-      mount(scope, makeSessionApi(scope.sessions, scope.uiWorkspace));
+    ctx.effect(injectStyles, 'prompt-seed:styles');
+    ctx.inject(['slots', 'sessions', 'uiWorkspace'], (scope) => {
+      const sessions = scope.sessions;
+      const workspace = scope.uiWorkspace;
+      const sessionApi = {
+        available: typeof sessions?.create === 'function' && typeof workspace?.openSession === 'function',
+        create: (request) => sessions.create(request), open: (id) => workspace.openSession(id),
+      };
+      try {
+        scope.slots.inject('conversation.input.right', () => scope.slots.register(
+          { name: 'conversation.input.right', id: 'prompt-seed', order: -10 },
+          (props) => props.useInput && props.inputActions ? React.createElement(ComposerTools, { ...props, sessionApi }) : null,
+        ));
+      } catch (error) { console.warn('[prompt-seed] toolbar unavailable', error); }
     });
-  } catch (error) {
-    console.warn('[prompt-seed] session services unavailable; falling back to direct optimize', error);
-    if (ctx.slots !== undefined) mount(ctx, makeSessionApi(undefined, undefined));
-  }
+  } catch (error) { console.warn('[prompt-seed] initialization failed', error); }
 }

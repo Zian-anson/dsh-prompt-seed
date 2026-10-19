@@ -3,7 +3,10 @@
  * 不再判断语义、语气、任务化、长度或“是否足够清楚”。
  */
 
-const EXPLICIT_ANCHOR = /(?:https?:\/\/[^\s)]+|[\\/][^\s,，。;；]+|\b[\w.-]+\.(?:js|mjs|cjs|ts|tsx|jsx|py|go|rs|java|rb|php|vue|svelte|css|scss|html|json|ya?ml|toml|md|sql|sh)\b|\b[A-Za-z_][A-Za-z0-9]*_[A-Za-z0-9_]+\b|\b[a-z]+[A-Z][A-Za-z0-9]*\b)/g;
+// Match the entire technical token, not only the /basename suffix. Chinese prose
+// adjacent to an ASCII path is not part of that path; quoted paths can contain spaces.
+const EXPLICIT_ANCHOR = /https?:\/\/[^\s<>"'`，。！？；：、（）\u3400-\u9fff]+|(?:\b[A-Za-z]:[\\/]|\.{0,2}[\\/]|\b[\w.@~-]+[\\/])[\w.@~+%/\\-]+|\b[\w.-]+\.(?:js|mjs|cjs|ts|tsx|jsx|py|go|rs|java|rb|php|vue|svelte|css|scss|html|json|ya?ml|toml|md|sql|sh)\b|\b[A-Za-z_][A-Za-z0-9]*_[A-Za-z0-9_]+\b|\b[a-z]+[A-Z][A-Za-z0-9]*\b/g;
+
 
 function skeleton(text) {
   return String(text ?? "").toLowerCase().replace(/[\s，。！？；：、,.!?;:()（）"'“”「」…—-]/g, "");
@@ -19,7 +22,7 @@ export function languageDrifts(input, output) {
   const cjk = (s) => (String(s ?? "").match(/[\u3400-\u4dbf\u4e00-\u9fff]/g) ?? []).length;
   const inCjk = cjk(input);
   const outCjk = cjk(output);
-  if (inCjk >= 3 && outCjk < Math.max(1, Math.floor(inCjk * 0.3))) return true;
+  if (inCjk >= 3 && outCjk === 0) return true;
   if (inCjk === 0 && outCjk >= 3) return true;
   return false;
 }
@@ -32,11 +35,13 @@ export function languageDrifts(input, output) {
  * @returns {boolean} 是否保留。
  */
 export function preservesAnchors(input, output) {
-  const out = String(output ?? "").toLowerCase();
-  const tokens = String(input ?? "").match(EXPLICIT_ANCHOR) ?? [];
+  const out = String(output ?? "");
+  const source = String(input ?? "");
+  const tokens = (source.match(EXPLICIT_ANCHOR) ?? []).map((token) => token.replace(/[.,;:!?]+$/, ""));
+  for (const match of source.matchAll(/`([^`\n]+)`/g)) tokens.push(match[1]);
   for (const token of tokens) {
     if (token.length < 2) continue;
-    if (!out.includes(token.toLowerCase())) return false;
+    if (!out.includes(token)) return false;
   }
   return true;
 }

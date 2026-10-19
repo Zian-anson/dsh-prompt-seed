@@ -2,150 +2,111 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-[![CI](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml/badge.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Zian-anson/dsh-prompt-seed)](https://github.com/Zian-anson/dsh-prompt-seed/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![tests: 19 passing](https://img.shields.io/badge/tests-19%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 63 passing](https://img.shields.io/badge/tests-63%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
-A DeepSeek Harness composer plugin. Type a rough draft, click **✦**, and it is rewritten in place.
+One contextual DSH composer entry: **✦ Optimize when the draft has content; 🔮 Crystal ball when empty**. The tools improve the draft or predict the user's most likely next reply. Neither sends messages.
 
-**0.19.2 is a minimal optimizer.** Every non-passthrough input gets exactly one model call and
-one contract: rewrite the draft into a clearer version of the same message. Do not answer it, do
-not execute it, do not add requirements. Preserve intent, speech act, language, uncertainty and
-explicit paths/identifiers. There are no routes, shapes, ambiguity scores, target ratios, repair
-calls, or semantic validation gates.
+> Version 0.20.0. See [acceptance evidence](docs/ACCEPTANCE.md) for model quality, real-UI verification and known limitations.
 
-The only guards are: empty/model error returns the original; a lost explicit path/file/URL/
-identifier returns the original. Everything else is left to the model and to undo.
+## Rewrite with useful substance
 
-First-optimize session creation is unchanged: in a blank new conversation the first optimize
-creates a real Session, generates its title, opens it with the draft, and binds the job to that
-sessionId. No message is sent. maxTokens is not set; a 15s idle watchdog and a 20s host budget
-remain.
+Short drafts gain essential execution details, boundaries and proportionate verification. Long spoken drafts become organized and shorter. Precise requests stay concise.
+Preserve intent, scope, facts, authorization, language, numbers, technical names and negative requirements—including “discuss only, do not implement.” Do not invent features, metrics or an unchosen stack.
 
-## What it does
+After generation, **Another version** uses the round's original draft, not the previous rewrite. Manual edits start a new round on the next click. Use **⋯ → Restore original** directly while untouched; after editing, preview it before explicitly replacing the draft.
+Empty input, greetings and pure confirmations make no call. Unchanged results say “Unchanged,” distinct from improvement and failure.
 
-| Draft | Result |
-|---|---|
-| 帮我做个登录页 | a more executable version of the same request |
-| 现在是不是该发布了？ | the same question, clarified |
-| 我觉得效果不好 | the same complaint, with object/criterion made explicit |
-| 好了 | no model call; neutral "nothing to optimize" |
-| 删除 src/a.js 的 export，跑测试 | near-verbatim; src/a.js must survive |
-| (empty input, conversation context) | crystal-ball prediction |
+## Predict the reply, not a recommended action
 
-There is no route table. If input is not empty/greeting, it is optimized once.
+Crystal ball is available when the composer is empty, the conversation has an assistant reply and the assistant is idle. It uses recent conversation and user style to suggest one short reply: acknowledgement, question, correction, extra information or continuation. With insufficient evidence it reports “Unable to predict for now.” Blank conversations make no call.
+After a prediction fills the draft, the main icon switches to Optimize. **⋯** offers **Another reply** and **Withdraw** while the candidate is untouched; editing removes those actions.
 
-## Sessions, switching, and recovery
+Success has no persistent text; a spinner indicates progress. Failure and unchanged results use short labels with details on hover. **⋯** appears only when recovery, background cancellation or a retained result is available. Switching the icon does not cancel either feature’s job.
 
-Optimization is a **host-owned job**, not a component-local fetch.
+## Independent features, safe drafts
 
-- Switch to another conversation while a job runs: the local stream detaches, the host job
-  continues. Switching never cancels.
-- Return: the button restores running progress or the finished result. If the draft is unchanged,
-  the result is applied; if you edited it, the result stays ready and the button says "result
-  ready — click to retrieve". A changed draft is never overwritten.
-- New conversation with no sessionId yet: the client uses a draft conversationKey and binds it to
-  the sessionId when the first message creates one. Only one unbound new-chat job is allowed at a
-  time.
-- Explicit cancel is the only cancel. Refresh/pages hidden/conversation switch do not cancel.
-- A job running in another conversation produces **no counter or badge** in the current composer.
-- Jobs are in-memory with a 10-minute TTL. Host restart loses jobs cleanly (idle, no stale
-  spinner); page refresh against the same host restores them.
-- API actions: optimize / status / bind / cancel / consume. There is no list-all-tasks endpoint.
+Each feature owns its prompt, context strategy, controller, task state, result and undo. Only connection, task storage, timeout and safe-write primitives are shared.
+
+- At most one model call per generation; no hidden retries, repair calls or semantic judge.
+- Jobs are scoped by conversation **and kind**. Switching, unmounting or disconnecting never cancels them; explicit cancellation only affects its own kind.
+- Automatic application requires the same conversation, editable input and unchanged draft revision, semantic references and attachments. Editing and reverting to the same text still prevents overwrite.
+- When unchanged state cannot be proved, including reload/remount, results remain available in a preview with explicit **Replace draft**.
+- Reference chips use the host's semantic draft API. Unsafe reconstruction or newly inserted incompatible chips makes the result preview-only. Text writes do not change attachments.
+- Each conversation retains its latest rewrite original/candidate across edits and switches. Confirmed submission clears recovery; submission failure retains it. Draft persistence remains host-owned; recovery records live in the browser tab.
+- Existing session IDs, including blank sessions, are reused without creating a session or changing its title. A truly unbound draft starts generation first, then asynchronously creates a necessary session and binds that same job, without stealing navigation.
+- Host jobs have a ten-minute in-memory retention period. Host restart removes stale running state cleanly.
 
 ## Install
 
+Published release:
+
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.19.2/dsh-prompt-seed-0.19.2.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.20.0/dsh-prompt-seed-0.20.0.tgz
 ```
 
-Or use the local tarball while developing:
-
-```sh
-dsh plugin --profile <name> add ./dsh-prompt-seed-0.19.2.tgz
-```
-
-The button appears in the composer tool row. Remove it with
-`dsh plugin --profile <name> remove dsh-prompt-seed`.
+For a local candidate, run `npm pack`, then `dsh plugin --profile <name> add ./dsh-prompt-seed-0.20.0.tgz`.
+Keep the previous package for recovery and restart DSH while idle after Host changes. Use the compatible CLI bundled with Desktop. Do not edit the installed copy.
+Remove with `dsh plugin --profile <name> remove dsh-prompt-seed`.
 
 ## Config
 
 ```yaml
 config:
   route: /api/prompt-seed/optimize
-  provider: opencode-go        # optional; omit to follow the host picker
-  model: deepseek-v4.1-flash
+  # provider / model: specify both, or follow the Host default selection
   requestTimeoutMs: 20000
   context: true
-  samples: ~/.dsh/prompt-seed/samples.jsonl
+  samples: true
   templates: true
 ```
 
-Removed in 0.19.2: `pipeline`, `depth`, `auditProvider`, `auditModel`, `deadlineMs`,
-`rewriteReasoningEffort`, `predict`, `tasks`. Those features were either latency multipliers
-or unverifiable; they are recoverable from the v0.14.4 tag.
+User templates in `$DSH_HOME/prompt-seed/prompts/` remain intact: `optimize.md` takes precedence, then legacy `seed.md`.
+Existing `clarify`, `precise` and `chat` files are preserved but are not selected by the single rewrite contract.
+Local sample logs contain input/output previews and are never automatically uploaded; `samples:false` disables them.
 
-Prompt overrides live in `$DSH_HOME/prompt-seed/prompts/{optimize}.md`.
+## HTTP compatibility
 
-## HTTP API
-
-`POST /api/prompt-seed/optimize`
-
-Request:
+`POST /api/prompt-seed/optimize` remains loopback-only and requires `application/json`.
 
 ```json
-{ "action": "optimize", "text": "...", "sessionId": "...", "conversationKey": "draft:...", "stream": true }
+{ "action": "optimize", "kind": "optimize", "text": "...", "sessionId": "...", "stream": true }
 ```
 
-Actions: `optimize`, `status`, `bind`, `cancel`, `consume`. `status` returns the current
-conversation's job (`{ok, job}`), `bind` attaches an unbound draft job to a sessionId, and
-`cancel` is explicit only. Jobs are keyed by sessionId and/or a draft conversationKey; there
-is no list-all-tasks endpoint.
+Actions: `optimize / predict / status / bind / cancel / consume`. Queries and binding default to optimize when `kind` is omitted. New clients pass `"optimize"` or `"predict"`. Cancellation/consumption retain legacy jobId-only calls; an explicit kind validates ownership.
 
-`stream:true` returns NDJSON:
+Both generators accept `stream:true` and return NDJSON `meta / delta / final` events with jobId and kind.
+Nonstream optimize retains its final JSON. Nonstream predict retains `{ok:true,text}` or `{ok:false,code,error}` without requiring new fields.
+Status adds `protocolVersion:2`, context availability and the last persisted user-message identifier, not chat content. `?debug=1` adds diagnostics to nonstream optimize.
+Failures, empty/truncated results and lost explicit full paths/files/URLs/identifiers never overwrite the draft.
 
-```text
-{"type":"meta","route":"optimize","reasons":[],"promptVersion":"0.19.2"}
-{"type":"delta","text":"..."}
-{"type":"final","ok":true,"text":"...","route":"optimize","changed":true,"calls":1,"ttftMs":900,"ms":2600}
+## Development and acceptance
+
+Node ≥22.19; zero runtime dependencies, no install step needed.
+
+```sh
+npm test        # builds lib/, runs 63 tests and documentation/install guards
+npm run bench -- --dsh <compatible-dsh-command> --profile web
+node tools/quality-judge.mjs bench/latest.json  # offline review sheet, no model call
 ```
-
-Without `stream`, the same final is returned as one JSON object. `?debug=1` adds a `_debug`
-block to the JSON final. The route is loopback-only and requires `application/json`.
-
-Failure is explicit: `empty_result`, `truncated`, `validation_failed` (with a reason and the
-rejected draft), `request_timeout`, or `nothing_to_optimize`. The original draft is never
-silently replaced on failure.
 
 | Validation | Count |
 |---|---|
 | Real-socket checks | ✅ 13 checks, run by `npm test` |
 
-## Development
+`src/` is authoritative; rebuild `lib/` after editing. Behavioral tests drive the shipped toolbar/controller with controllable drafts, sessions and model streams rather than checking function names.
 
-```sh
-npm test        # builds lib/, runs 19 tests, 13 real-socket checks, docs/install guards
-npm run bench   # real-model benchmark on the default route
-```
+`bench/corpus.json` contains 30 rewrite cases; `bench/predict-corpus.json` contains 10 contextual prediction cases.
+The benchmark temporarily loads a development-only plugin into a separate web Host and uses DSH's `llm` service and templates. It never reads credentials or calls a provider directly. Synthetic context stays in fixtures, not user sessions; the benchmark entry is not packaged.
+The test Host must already have a working model connection. Desktop-account evaluation requires explicit temporary-loading approval; see [benchmark setup](bench/README.md).
+Options: `--start`, `--limit`, `--out`, `--provider`, `--model`.
 
-The benchmark corpus is `bench/corpus.json`; the runner is `tools/bench.mjs`. It checks exactly
-one call for content, zero for passthrough, failures, anchor preservation and p50/p95 latency.
-Quality is **not** machine-judged: use the 30-40 case blind review described in the release
-notes. Release gate: p95 ≤ 8 s, zero failures/bad calls/anchor loss, and human acceptance ≥80%.
+Measure both features separately, excluding zero-call cases: p50 ≤3 seconds, p95 ≤8 seconds. At least 80% of improvable rewrite cases should gain useful substance without distortion. Synonyms, politeness and filler do not count; precise originals may remain unchanged. Judge predictions by whether the user might plausibly reply that way, not whether they advance the task. Model evaluation and static checks do not replace real DSH clicks.
 
 ## Limits
 
-- A single provider call can still be slow; 15 s without a new token aborts, the host budget is
-  20 s, and a healthy stream is not cut at 12 s.
-- `reasoningEffort: "low"` is sent when the selected route declares reasoning; the DSH adapter
-  rejects `none` for this route. The plugin does not add hidden retries.
-- Context uses the recent 3 user turns + 2 assistant tails, max 1400 chars, only to resolve
-  references; it is not a rewrite target.
-- Prediction is back for an empty composer; depth modes remain removed; optimization jobs are
-  host-owned and session-scoped.
+A model can be slow or wrong. Idle timeout is 15 seconds; the default total Host budget is 20 seconds. Rewrite context favors newest messages: up to 3 user turns and 2 assistant tails, 1400 characters total. Prediction has its own six-turn window. Without reliable revision/semantic APIs, results remain preview-only.
 
-## License
+DSH 0.2.1-rc.2 does not persist unsent image attachments across app restart. Rewriting preserves them, but after restarting, reattach the original images. Text and reference chips use host-owned draft recovery; see [acceptance evidence](docs/ACCEPTANCE.md).
 
 MIT.
