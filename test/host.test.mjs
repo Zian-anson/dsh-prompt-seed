@@ -255,3 +255,32 @@ test('host: client stream disconnect leaves prediction running until explicit ca
     assert.equal(seenSignal.aborted, true);
   } finally { server.close(); }
 });
+
+test("host: ui.button config hides the built-in client button flag", async () => {
+  const makeCtx = () => {
+    let registered;
+    const ctx = {
+      webServer: { register(route) { registered = route; return () => {}; } },
+      effect(fn) { fn(); },
+      get() { return undefined; },
+    };
+    return { ctx, registered: () => registered };
+  };
+  const disabled = makeCtx();
+  apply(disabled.ctx, { samples: false, templates: false, ui: { button: false } });
+  const server = http.createServer((req, res) => disabled.registered().handler(req, res));
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const status = JSON.parse((await post(server.address().port, disabled.registered().path, { action: "status" })).text);
+    assert.equal(status.ui.composerButton, false);
+  } finally { server.close(); }
+
+  const enabled = makeCtx();
+  apply(enabled.ctx, { samples: false, templates: false });
+  const server2 = http.createServer((req, res) => enabled.registered().handler(req, res));
+  await new Promise((resolve) => server2.listen(0, "127.0.0.1", resolve));
+  try {
+    const status = JSON.parse((await post(server2.address().port, enabled.registered().path, { action: "status" })).text);
+    assert.equal(status.ui.composerButton, true);
+  } finally { server2.close(); }
+});

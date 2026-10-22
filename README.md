@@ -2,11 +2,11 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-[![tests: 63 passing](https://img.shields.io/badge/tests-63%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 68 passing](https://img.shields.io/badge/tests-68%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
 One contextual DSH composer entry: **✦ Optimize when the draft has content; 🔮 Crystal ball when empty**. The tools improve the draft or predict the user's most likely next reply. Neither sends messages.
 
-> Version 0.20.0. See [acceptance evidence](docs/ACCEPTANCE.md) for model quality, real-UI verification and known limitations.
+> Version 0.21.1. See [acceptance evidence](docs/ACCEPTANCE.md) for model quality, real-UI verification and known limitations.
 
 ## Rewrite with useful substance
 
@@ -42,10 +42,10 @@ Published release:
 
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.20.0/dsh-prompt-seed-0.20.0.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.21.1/dsh-prompt-seed-0.21.1.tgz
 ```
 
-For a local candidate, run `npm pack`, then `dsh plugin --profile <name> add ./dsh-prompt-seed-0.20.0.tgz`.
+For a local candidate, run `npm pack`, then `dsh plugin --profile <name> add ./dsh-prompt-seed-0.21.1.tgz`.
 Keep the previous package for recovery and restart DSH while idle after Host changes. Use the compatible CLI bundled with Desktop. Do not edit the installed copy.
 Remove with `dsh plugin --profile <name> remove dsh-prompt-seed`.
 
@@ -59,6 +59,8 @@ config:
   context: true
   samples: true
   templates: true
+  # ui:
+  #   button: true   # 0.21.1: set false when another package owns the optimize entry; the crystal ball stays
 ```
 
 User templates in `$DSH_HOME/prompt-seed/prompts/` remain intact: `optimize.md` takes precedence, then legacy `seed.md`.
@@ -77,7 +79,7 @@ Actions: `optimize / predict / status / bind / cancel / consume`. Queries and bi
 
 Both generators accept `stream:true` and return NDJSON `meta / delta / final` events with jobId and kind.
 Nonstream optimize retains its final JSON. Nonstream predict retains `{ok:true,text}` or `{ok:false,code,error}` without requiring new fields.
-Status adds `protocolVersion:2`, context availability and the last persisted user-message identifier, not chat content. `?debug=1` adds diagnostics to nonstream optimize.
+Status adds `protocolVersion:2`, `ui.composerButton`, context availability and the last persisted user-message identifier, not chat content. `?debug=1` adds diagnostics to nonstream optimize.
 Failures, empty/truncated results and lost explicit full paths/files/URLs/identifiers never overwrite the draft.
 
 ## Development and acceptance
@@ -85,7 +87,7 @@ Failures, empty/truncated results and lost explicit full paths/files/URLs/identi
 Node ≥22.19; zero runtime dependencies, no install step needed.
 
 ```sh
-npm test        # builds lib/, runs 63 tests and documentation/install guards
+npm test        # builds lib/, runs 68 tests and documentation/install guards
 npm run bench -- --dsh <compatible-dsh-command> --profile web
 node tools/quality-judge.mjs bench/latest.json  # offline review sheet, no model call
 ```

@@ -1,6 +1,6 @@
 {
   "name": "dsh-prompt-seed",
-  "version": "0.20.0",
+  "version": "0.21.1",
   "description": "DSH composer: proactive one-call draft rewriting and independent next-reply prediction, with session-scoped jobs and safe draft recovery.",
   "type": "module",
   "license": "MIT",

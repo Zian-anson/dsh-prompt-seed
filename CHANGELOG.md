@@ -9,6 +9,30 @@ developer preview and moves quickly. Patch bumps will not break anything.
 
 ## [Unreleased]
 
+## [0.21.1] - 2026-10-22
+
+### Added
+
+- `ui.button: false` row config (default true): lets an external optimization UX (e.g.
+  `dsh-composer-optimize`) own the ✦ entry. The built-in optimize button and its actions stay
+  hidden while the prediction crystal ball keeps appearing on empty drafts and stays reachable
+  while a prediction runs, a result awaits or a failure needs reading. `status` now reports
+  `ui.composerButton`; the client probes it once at boot and degrades fail-open (a probe failure
+  keeps the built-in tools visible).
+
+### Fixed
+
+- The first cut of this feature (developed locally as 0.21.0, never released) gated the whole
+  toolbar registration on the probe, which removed prediction entirely — no other package provides
+  it. The probe now marks the entry host-owned instead of unregistered, so prediction survives.
+  A non-empty draft with no prediction state renders nothing next to the host's own entry.
+
+### Tests
+
+- 68 unit/contract tests (was 63): `ui.composerButton` in the status payload, the client-side
+  gated registration, and the host-owned entry keeping prediction usable (appears on empty
+  drafts, disappears with a non-empty draft, running predictions stay cancellable while typing).
+
 ## [0.20.0] - 2026-10-19
 
 ### Changed
@@ -1202,6 +1226,7 @@ a green suite.
   Seeds are expanded 10–25×; already-precise instructions are left alone.
 
 [Unreleased]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.20.0...HEAD
+[0.21.1]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.20.0...v0.21.1
 [0.20.0]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.19.2...v0.20.0
 [0.8.7]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.6...v0.8.7
 [0.8.6]: https://github.com/Zian-anson/dsh-prompt-seed/compare/v0.8.5...v0.8.6

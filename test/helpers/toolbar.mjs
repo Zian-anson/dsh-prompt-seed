@@ -17,7 +17,7 @@ export async function toolbar(options = {}) {
       const body = JSON.parse(init.body); requests.push(body);
       const job = jobs.findLast((j) => j.kind === (body.kind ?? 'optimize') && (body.sessionId ? j.sessionId === body.sessionId : j.conversationKey === body.conversationKey));
       const json = (data) => new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } });
-      if (body.action === 'status') return json({ ok: true, job: job ?? null, hasAssistant: !options.blank, contextKnown: true, lastUserMessageId: 's1:1' });
+      if (body.action === 'status') return json({ ok: true, job: job ?? null, hasAssistant: !options.blank, contextKnown: true, lastUserMessageId: 's1:1', ...(options.hostOwnsOptimize ? { ui: { composerButton: false } } : {}) });
       if (body.action === 'bind') { if (job) job.sessionId = body.sessionId; else { const old = jobs.findLast((j) => j.conversationKey === body.conversationKey && j.kind === body.kind); if (old) { old.sessionId = body.sessionId; return json({ ok: true, job: old }); } } return json({ ok: true, job }); }
       if (body.action === 'consume') { const j = jobs.find((j) => j.id === body.jobId); if (j) j.consumed = true; return json({ ok: true }); }
       if (body.action === 'cancel') { const j = jobs.find((j) => j.id === body.jobId); if (j) { j.status = 'cancelled'; j.result = { ok: false, code: 'cancelled' }; } return json({ ok: true, job: j }); }
@@ -35,6 +35,8 @@ export async function toolbar(options = {}) {
     sessions: { async create(request) { creates.push(request); return options.create ? options.create() : { sessionId: 'new' }; } },
     uiWorkspace: { openSession(id) { opens.push(id); sessionId = id; input = { ...input, draft: '', draftRev: 0 }; r.render(); } },
   }); } });
+  // 0.21.0: slot registration waits for the ui.button probe (fail-open).
+  await tick();
   r.mount(() => occupant({ sessionId, workspaceId: 'w1', useInput: (selector) => selector(input), inputActions,
     useSession: (selector) => selector({ sessionId, blank: options.blank ?? false, running, awaitingFirstTurn: false }) }));
   await tick(); await tick();

@@ -2,11 +2,11 @@
 
 [English](README.md) | **简体中文**
 
-[![tests: 63 passing](https://img.shields.io/badge/tests-63%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
+[![tests: 68 passing](https://img.shields.io/badge/tests-68%20passing-brightgreen.svg)](https://github.com/Zian-anson/dsh-prompt-seed/actions/workflows/ci.yml)
 
 DSH 输入框只显示一个主工具：**有内容时 ✦ 优化，空白时 🔮 预测下一句**。都只填入草稿，不自动发送。
 
-> 当前版本 0.20.0；真实模型质量、界面验收与已知限制见 [验收记录](docs/ACCEPTANCE.md)。
+> 当前版本 0.21.1；真实模型质量、界面验收与已知限制见 [验收记录](docs/ACCEPTANCE.md)。
 
 ## ✦ 把意思表达清楚，而不只是换同义词
 
@@ -48,10 +48,10 @@ DSH 输入框只显示一个主工具：**有内容时 ✦ 优化，空白时 �
 
 ```sh
 dsh plugin --profile <name> add \
-  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.20.0/dsh-prompt-seed-0.20.0.tgz
+  https://github.com/Zian-anson/dsh-prompt-seed/releases/download/v0.21.1/dsh-prompt-seed-0.21.1.tgz
 ```
 
-开发候选：`npm pack` 后用 `dsh plugin --profile <name> add ./dsh-prompt-seed-0.20.0.tgz` 安装。
+开发候选：`npm pack` 后用 `dsh plugin --profile <name> add ./dsh-prompt-seed-0.21.1.tgz` 安装。
 Host 改动需要空闲时重启 DSH。先保留旧安装包用于恢复；不要编辑 profile 中的安装副本。
 桌面版应使用应用自带的兼容 CLI。卸载：`dsh plugin --profile <name> remove dsh-prompt-seed`。
 
@@ -65,6 +65,8 @@ config:
   context: true
   samples: true
   templates: true
+  # ui:
+  #   button: true   # 0.21.1：外部包接管优化入口时设为 false；只隐藏 ✦，水晶球保留
 ```
 
 模板覆盖仍从 `$DSH_HOME/prompt-seed/prompts/` 读取：`optimize.md` 优先、`seed.md` 为旧版回退。
@@ -85,7 +87,7 @@ config:
 
 两种生成都可 `stream:true`，返回 NDJSON `meta / delta / final`，包含 jobId 和 kind。
 非流式 optimize 返回原 final JSON；非流式 predict 保持 `{ok:true,text}` 或 `{ok:false,code,error}`，不要求新字段。
-`status` 增加 `protocolVersion:2`、上下文是否可用及最后持久化用户消息标识，不返回聊天正文。
+`status` 增加 `protocolVersion:2`、`ui.composerButton` 标志、上下文是否可用及最后持久化用户消息标识，不返回聊天正文。
 `?debug=1` 给非流式优化附加诊断信息。
 
 模型失败、空结果、截断、完整路径/文件名/URL/标识符丢失均不写回，不自动重试。
@@ -95,14 +97,14 @@ config:
 Node ≥22.19，零运行时依赖，无需 `npm install`。
 
 ```sh
-npm test        # 构建 lib/，再跑 63 项测试、13 项真实 socket 检查、文档/安装守卫
+npm test        # 构建 lib/，再跑 68 项测试、13 项真实 socket 检查、文档/安装守卫
 npm run bench -- --dsh <兼容的DSH命令> --profile web
 node tools/quality-judge.mjs bench/latest.json  # 生成离线评阅表，不调用模型
 ```
 
 | 文件 | 内容 |
 |---|---|
-| `test/*.test.mjs` | 63 项单元/契约/路由测试 |
+| `test/*.test.mjs` | 68 项单元/契约/路由测试 |
 | `src/` → `lib/` | 唯一源码 → 生成物，请勿手改 lib |
 | `bench/corpus.json` | 30 条改写样本及信息增益/失真标准 |
 | `bench/predict-corpus.json` | 10 条带上下文预测样本 |

@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-export const PROMPT_VERSION = "0.20.0";
+export const PROMPT_VERSION = "0.21.1";
 
 const BASE = [
   "Rewrite the user's draft into a message that helps the recipient understand and accomplish the user's actual intent.",

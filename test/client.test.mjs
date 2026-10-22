@@ -35,13 +35,82 @@ test("client module: declares and injects session services", async () => {
     },
   };
   loaded.factory(() => ({ createElement: () => null })).apply(ctx);
+  // 0.21.0: the slot registration waits for one status probe (fail-open).
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(dependencies.join(","), "slots,sessions,uiWorkspace");
   assert.equal(mounted, true);
   assert.match(source, /data-client-version/);
-  assert.match(source, /CLIENT_VERSION = '0\.20\.0'/);
+  assert.match(source, /CLIENT_VERSION = '0\.21\.1'/);
+});
+
+test("client module: ui.button=false still registers the slot — prediction stays", async () => {
+  const source = await readFile(new URL("../lib/client.js", import.meta.url), "utf8");
+  let loaded;
+  const sandbox = {
+    window: {
+      __ModuleLoader__: { load(record) { loaded = record; } },
+      fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ ok: true, ui: { composerButton: false } }) }),
+    },
+    fetch: async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ ok: true, ui: { composerButton: false } }) }),
+    console,
+  };
+  vm.runInNewContext(source, sandbox);
+  let mounted = false;
+  const ctx = {
+    effect(fn) { fn(); return () => {}; },
+    inject(deps, callback) {
+      callback({
+        slots: { inject() { mounted = true; }, register() { return () => {}; } },
+        sessions: { create: async () => ({ sessionId: "s1" }), using: async () => ({ ok: true }) },
+        uiWorkspace: { openSession() {} },
+      });
+    },
+  };
+  loaded.factory(() => ({ createElement: () => null })).apply(ctx);
+  await new Promise((resolve) => setImmediate(resolve));
+  // 0.21.1: a host-owned optimize entry hides only the ✦ half; the slot must
+  // stay registered so the crystal ball keeps rendering.
+  assert.equal(mounted, true);
 });
 
 import { toolbar } from './helpers/toolbar.mjs';
+
+test('toolbar: host-owned optimize entry keeps the crystal ball and never offers optimize', async () => {
+  const f = await toolbar({ hostOwnsOptimize: true, text: '' });
+  try {
+    assert.equal(f.r.byId('prompt-seed-optimize'), undefined);
+    assert.equal(f.r.byId('prompt-seed-predict').props.disabled, false);
+    f.r.click('prompt-seed-predict'); await f.flush(); f.calls[0].finish('为什么这样设计？'); await f.flush();
+    assert.equal(f.read().draft, '为什么这样设计？');
+    assert.equal(f.r.byId('prompt-seed-predict').props['aria-label'], '换一句');
+    f.r.click('prompt-seed-more'); await f.flush(); f.r.click('prompt-seed-withdraw'); await f.flush();
+    assert.equal(f.read().draft, '');
+  } finally { f.close(); }
+});
+
+test('toolbar: host-owned entry renders nothing when nothing is predictable', async () => {
+  const f = await toolbar({ hostOwnsOptimize: true, blank: true, text: '' });
+  try {
+    assert.equal(f.r.byId('prompt-seed-predict').props.disabled, true);
+    assert.equal(f.r.byId('prompt-seed-optimize'), undefined);
+    f.edit('自己写的内容'); await f.flush();
+    assert.equal(f.r.byId('prompt-seed-predict'), undefined);
+    assert.equal(f.r.byId('prompt-seed-optimize'), undefined);
+    assert.equal(f.r.byId('prompt-seed-more'), undefined);
+  } finally { f.close(); }
+});
+
+test('toolbar: host-owned entry keeps a running prediction cancellable while typing', async () => {
+  const f = await toolbar({ hostOwnsOptimize: true, text: '' });
+  try {
+    f.r.click('prompt-seed-predict'); await f.flush(); f.edit('手写内容'); await f.flush();
+    assert.ok(f.r.byId('prompt-seed-predict'));
+    f.r.click('prompt-seed-predict'); await f.flush();
+    assert.equal(f.requests.findLast((x) => x.action === 'cancel').kind, 'predict');
+    f.calls[0].finish('迟到的预测'); await f.flush();
+    assert.equal(f.read().draft, '手写内容');
+  } finally { f.close(); }
+});
 
 test('toolbar: one entry follows draft content, with recovery and prediction actions on demand', async () => {
   const f = await toolbar();
